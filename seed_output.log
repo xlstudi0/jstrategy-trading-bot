@@ -1,0 +1,141 @@
+2026-05-09 15:30:01,472 | INFO | [BT] 🔻 SHORT ABIERTO | BTC/USDT:USDT
+Precio: 89106.80 | Tamaño: 0.003367
+Tipo: C | Score: 6/10
+Killzone: London_Open | Sizing: 1.00x
+Balance restante: 4899.99 USDT
+/home/mr-x/Desktop/Estrategia Jorge - Trading System/04_SCRIPT_BOT_PYTHON.py:262: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  now = datetime.utcnow()
+/home/mr-x/Desktop/Estrategia Jorge - Trading System/04_SCRIPT_BOT_PYTHON.py:331: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  "last_updated_utc": datetime.utcnow().isoformat(),
+2026-05-09 15:30:01,620 | INFO | [BT] 💰 TP1 SHORT | BTC/USDT:USDT
+Precio: 87857.90 | +1.4% (favorable)
+Cerrado: 20% | Ganancia: +20.84 USDT
+2026-05-09 15:30:01,704 | INFO | [BT] 💰 TP2 SHORT | BTC/USDT:USDT
+Precio: 86978.70 | +2.4% (favorable)
+Cerrado: 20% | Ganancia: +17.15 USDT
+2026-05-09 15:30:01,713 | INFO | [BT] 💰 TP3 SHORT | BTC/USDT:USDT
+Precio: 84898.00 | +4.7% (favorable)
+Cerrado: 30% | Ganancia: +21.92 USDT
+2026-05-09 15:30:03,185 | INFO | [BT] 🔓 SHORT CERRADO (trail) | BTC/USDT:USDT
+Squeeze alcista emergió post-TP1 → cierre total
+Resultado: +21.9% | Balance: 5034.14
+2026-05-09 15:30:03,418 | INFO | [BT] 🔻 SHORT ABIERTO | BTC/USDT:USDT
+Precio: 70393.50 | Tamaño: 0.002983
+Tipo: C | Score: 5/10
+Killzone: London_Open | Sizing: 0.70x
+Balance restante: 4964.14 USDT
+2026-05-09 15:30:03,434 | INFO | [BT] 💰 TP1 SHORT | BTC/USDT:USDT
+Precio: 69588.00 | +1.1% (favorable)
+Cerrado: 20% | Ganancia: +14.48 USDT
+2026-05-09 15:30:03,443 | INFO | [BT] 💰 TP2 SHORT | BTC/USDT:USDT
+Precio: 68694.00 | +2.4% (favorable)
+Cerrado: 20% | Ganancia: +12.01 USDT
+2026-05-09 15:30:03,771 | INFO | [BT] 💰 TP3 SHORT | BTC/USDT:USDT
+Precio: 67548.80 | +4.0% (favorable)
+Cerrado: 30% | Ganancia: +15.07 USDT
+2026-05-09 15:30:04,339 | INFO | [BT] 🔓 SHORT CERRADO (trail) | BTC/USDT:USDT
+Squeeze alcista emergió post-TP1 → cierre total
+Resultado: +0.9% | Balance: 5037.94
+2026-05-09 15:30:07,135 | INFO | [BT] ✅ LONG ABIERTO | BTC/USDT:USDT
+Precio: 66539.90 | Tamaño: 0.004509 BTC
+Tipo: C | Score: 5/10
+Balance restante: 4937.93 USDT
+2026-05-09 15:30:07,144 | INFO | [BT] 💰 TP1 | BTC/USDT:USDT
+Precio: 67692.50 | +1.7% precio (+5.2%/margen)
+Cerrado: 20% | Ganancia: +21.04 USDT | Balance: 4958.98 USDT
+2026-05-09 15:30:07,153 | INFO | [BT] 💰 TP2 | BTC/USDT:USDT
+Precio: 68137.40 | +2.4% precio (+7.2%/margen)
+Cerrado: 20% | Ganancia: +17.15 USDT | Balance: 4976.13 USDT
+2026-05-09 15:30:07,254 | INFO | [BT] 💰 TP3 | BTC/USDT:USDT
+Precio: 69464.50 | +4.4% precio (+13.2%/margen)
+Cerrado: 30% | Ganancia: +21.73 USDT | Balance: 4997.86 USDT
+2026-05-09 15:30:07,927 | INFO | [BT] 🛑 TRAILING STOP POST-TP1 | BTC/USDT:USDT
+TP1 alcanzado, precio cayó -0.5% bajo entrada promedio
+ADX dejó de ser alcista → cierre protector | Balance: 5041.98 USDT
+2026-05-09 15:30:07,981 | INFO | [BT] 🔻 SHORT ABIERTO | BTC/USDT:USDT
+Precio: 67504.80 | Tamaño: 0.003111
+Tipo: C | Score: 5/10
+Killzone: London_Open | Sizing: 0.70x
+Balance restante: 4971.98 USDT
+2026-05-09 15:30:08,019 | INFO | [BT] 🔄 DCA SHORT #1 (0.5x) | BTC/USDT:USDT
+Precio: 68939.90 | Subida: 2.1%
+Precio prom: 68095.45
+2026-05-09 15:30:08,095 | INFO | [BT] 🔄 DCA SHORT #2 (0.75x) | BTC/USDT:USDT
+Precio: 70242.00 | Subida: 3.2%
+Precio prom: 68905.27
+2026-05-09 15:30:08,568 | INFO | [BT] 🔄 DCA SHORT #3 (1.0x) | BTC/USDT:USDT
+Precio: 72421.20 | Subida: 5.1%
+Precio prom: 70058.14
+2026-05-09 15:30:09,050 | INFO | [BT] ❌ HARD STOP SHORT | BTC/USDT:USDT
+Precio: 74360.30 | Pérdida: -6.1%
+2026-05-09 15:30:10,205 | INFO | [BT] 🔻 SHORT ABIERTO | BTC/USDT:USDT
+Precio: 70067.00 | Tamaño: 0.004282
+Tipo: C | Score: 5/10
+Killzone: NY_AM | Sizing: 1.00x
+Balance restante: 4887.62 USDT
+2026-05-09 15:30:10,235 | INFO | [BT] 💰 TP1 SHORT | BTC/USDT:USDT
+Precio: 69205.00 | +1.2% (favorable)
+Cerrado: 20% | Ganancia: +20.74 USDT
+2026-05-09 15:30:10,313 | INFO | [BT] 🔓 SHORT CERRADO (trail) | BTC/USDT:USDT
+Squeeze alcista emergió post-TP1 → cierre total
+Resultado: -1.2% | Balance: 4985.39
+2026-05-09 15:30:11,103 | INFO | [BT] 🔻 SHORT ABIERTO | BTC/USDT:USDT
+Precio: 67595.90 | Tamaño: 0.003107
+Tipo: C | Score: 5/10
+Killzone: London_Open | Sizing: 0.70x
+Balance restante: 4915.38 USDT
+2026-05-09 15:30:11,172 | INFO | [BT] 💰 TP1 SHORT | BTC/USDT:USDT
+Precio: 66805.20 | +1.2% (favorable)
+Cerrado: 20% | Ganancia: +14.49 USDT
+2026-05-09 15:30:11,323 | INFO | [BT] 💰 TP2 SHORT | BTC/USDT:USDT
+Precio: 66099.30 | +2.2% (favorable)
+Cerrado: 20% | Ganancia: +11.95 USDT
+2026-05-09 15:30:11,469 | INFO | [BT] 🔄 DCA SHORT #1 (0.5x) | BTC/USDT:USDT
+Precio: 69069.10 | Subida: 2.2%
+Precio prom: 68364.82
+2026-05-09 15:30:12,214 | INFO | [BT] 🔓 SHORT CERRADO (trail) | BTC/USDT:USDT
+Squeeze alcista emergió post-TP1 → cierre total
+Resultado: -1.0% | Balance: 4983.76
+2026-05-09 15:30:14,146 | INFO | [BT] ✅ LONG ABIERTO | BTC/USDT:USDT
+Precio: 74795.50 | Tamaño: 0.002808 BTC
+Tipo: C | Score: 5/10
+Balance restante: 4913.76 USDT
+2026-05-09 15:30:14,195 | INFO | [BT] 💰 TP1 | BTC/USDT:USDT
+Precio: 75668.10 | +1.2% precio (+3.5%/margen)
+Cerrado: 20% | Ganancia: +14.49 USDT | Balance: 4928.25 USDT
+2026-05-09 15:30:14,215 | INFO | [BT] 💰 TP2 | BTC/USDT:USDT
+Precio: 76388.80 | +2.1% precio (+6.4%/margen)
+Cerrado: 20% | Ganancia: +11.92 USDT | Balance: 4940.16 USDT
+2026-05-09 15:30:14,393 | INFO | [BT] 💰 TP3 | BTC/USDT:USDT
+Precio: 77568.10 | +3.7% precio (+11.1%/margen)
+Cerrado: 30% | Ganancia: +14.94 USDT | Balance: 4955.10 USDT
+2026-05-09 15:30:16,897 | INFO | [BT] 🚪 LONG cerrado forzado (backtest_end) | +8.0%
+⚠️  No se pudo cargar capa adaptativa: 'NoneType' object has no attribute '__dict__'
+────────────────────────────────────────────────────────────
+SEED BUCKETS — replay histórico con lógica V3 (modo cold-start)
+────────────────────────────────────────────────────────────
+  Backup previo: jorge_backtest_journal.csv.bak
+  Descargando histórico para BTC/USDT:USDT...
+  Velas entry: 2500 | mid: 1800 | macro: 600
+    [200/2500] 2026-02-02 23:00 | L: 0 | S: 1 | bal: 4959.90
+    [400/2500] 2026-02-11 07:00 | L: 0 | S: 2 | bal: 5005.70
+    [600/2500] 2026-02-19 15:00 | L: 0 | S: 2 | bal: 5037.94
+    [800/2500] 2026-02-27 23:00 | L: 0 | S: 2 | bal: 5037.94
+    [1000/2500] 2026-03-08 07:00 | L: 1 | S: 2 | bal: 4997.86
+    [1200/2500] 2026-03-16 15:00 | L: 1 | S: 3 | bal: 4746.99
+    [1400/2500] 2026-03-24 23:00 | L: 1 | S: 4 | bal: 4908.36
+    [1600/2500] 2026-04-02 07:00 | L: 1 | S: 5 | bal: 4891.84
+    [1800/2500] 2026-04-10 15:00 | L: 1 | S: 5 | bal: 4983.76
+    [2000/2500] 2026-04-18 23:00 | L: 1 | S: 5 | bal: 4983.76
+    [2200/2500] 2026-04-27 07:00 | L: 2 | S: 5 | bal: 4955.10
+    [2400/2500] 2026-05-05 15:00 | L: 2 | S: 5 | bal: 4955.10
+
+────────────────────────────────────────────────────────────
+✅ Backtest completo
+   Longs abiertos:  2
+   Shorts abiertos: 5
+   Velas omitidas (fuera de killzone): 1710
+   Balance final: 4994.00 USDT (inicial 5000)
+   PnL: -6.00 USDT (-0.12%)
+   Journal escrito: jorge_backtest_journal.csv
+────────────────────────────────────────────────────────────

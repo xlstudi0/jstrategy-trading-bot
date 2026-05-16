@@ -1,0 +1,13 @@
+{
+  "total_events": 0,
+  "closed_trades": 0,
+  "wins": 0,
+  "losses": 0,
+  "win_rate_pct": 0.0,
+  "gross_profit_usdt": 0.0,
+  "gross_loss_usdt": 0.0,
+  "profit_factor": 0.0,
+  "net_pnl_usdt": 0.0,
+  "avg_win_usdt": 0.0,
+  "avg_loss_usdt": 0.0
+}

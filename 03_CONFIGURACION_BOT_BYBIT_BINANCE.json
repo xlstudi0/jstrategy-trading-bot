@@ -1,0 +1,231 @@
+{
+  "_comment": "Configuración de bot para Bybit/Binance Futures — Estrategia Jorge (DigitalCapitalsTrading)",
+  "_version": "1.0",
+  "_mercado": "BTCUSDT Perpetuo | también aplicable a altcoins mayores",
+
+  "strategy": {
+    "name": "Jorge_EMA_12Candles_v1",
+    "description": "Sistema multi-temporalidad con EMA10/EMA55, Teoría 12 Velas y Squeeze Momentum",
+    "type": "long_bias_dca_hedge",
+    "base_pair": "BTCUSDT",
+    "market_type": "futures_perpetual"
+  },
+
+  "timeframes": {
+    "macro_analysis": ["1W", "1D"],
+    "intermediate": ["12H", "4H"],
+    "entry": ["1H", "15m"],
+    "scalping": ["5m", "1m"]
+  },
+
+  "indicators": {
+    "ema_10": {
+      "period": 10,
+      "source": "close",
+      "color": "#FFD700",
+      "role": "dynamic_support_resistance_short"
+    },
+    "ema_55": {
+      "period": 55,
+      "source": "close",
+      "color": "#FF6B35",
+      "role": "dynamic_support_resistance_long"
+    },
+    "ema_200": {
+      "period": 200,
+      "source": "close",
+      "color": "#FFFFFF",
+      "role": "macro_reference_monthly_weekly_only"
+    },
+    "squeeze_momentum": {
+      "type": "LazyBear_Squeeze_Momentum",
+      "bb_length": 20,
+      "bb_mult": 2.0,
+      "kc_length": 20,
+      "kc_mult": 1.5,
+      "use_true_range": true,
+      "role": "momentum_confirmation_entry_timing"
+    },
+    "volume": {
+      "type": "volume_bars",
+      "ma_period": 20,
+      "role": "institutional_confirmation"
+    }
+  },
+
+  "entry_conditions": {
+    "long_entry": {
+      "condition_1_macro": {
+        "description": "EMA10 por encima de EMA55 en 1D (tendencia alcista confirmada)",
+        "timeframe": "1D",
+        "rule": "ema10 > ema55"
+      },
+      "condition_2_compression": {
+        "description": "Compresión: diferencia entre EMA10 y EMA55 < 2% en 4H",
+        "timeframe": "4H",
+        "rule": "abs(ema10 - ema55) / ema55 < 0.02"
+      },
+      "condition_3_candle_theory": {
+        "description": "Estamos en vela 5 a 7 del conteo desde la última vela de referencia",
+        "timeframe": "4H",
+        "rule": "candle_count >= 5 AND candle_count <= 8"
+      },
+      "condition_4_squeeze": {
+        "description": "Squeeze Momentum en cuadrante alcista (histograma positivo y creciente)",
+        "timeframe": "1H",
+        "rule": "sqz_momentum > 0 AND sqz_momentum > sqz_momentum[1]"
+      },
+      "condition_5_price_vs_ema": {
+        "description": "Precio no más alejado del 3% de la EMA10 en 1D (evita entrar en sobreextensión)",
+        "timeframe": "1D",
+        "rule": "abs(close - ema10) / ema10 < 0.03"
+      },
+      "condition_6_volume": {
+        "description": "Volumen actual > promedio de 20 velas (absorción activa)",
+        "timeframe": "entry_timeframe",
+        "rule": "volume > volume_ma_20"
+      }
+    },
+    "short_entry": {
+      "condition_1": {
+        "description": "EMA10 por debajo de EMA55 en 4H (tendencia bajista)",
+        "rule": "ema10 < ema55"
+      },
+      "condition_2": {
+        "description": "Precio tocando resistencia clave (OB virgen o caja roja) después de 3+ toques fallidos",
+        "rule": "price_at_resistance AND touch_count >= 3"
+      },
+      "condition_3": {
+        "description": "Compresión fallida: 12 velas sin superar resistencia",
+        "rule": "candle_count >= 12 AND price < resistance"
+      },
+      "condition_4": {
+        "description": "Squeeze Momentum bajista",
+        "rule": "sqz_momentum < 0 AND sqz_momentum < sqz_momentum[1]"
+      }
+    }
+  },
+
+  "position_sizing": {
+    "method": "5_parts_dca",
+    "total_risk_per_trade_pct": 10,
+    "parts": 5,
+    "each_part_pct": 20,
+    "leverage": {
+      "default": 5,
+      "scalping": 10,
+      "swing_major": 3,
+      "max_recommended": 10
+    },
+    "account_split": {
+      "active_risk_pct": 50,
+      "reserve_for_dca_hedge_pct": 50
+    },
+    "max_simultaneous_trades": 20,
+    "capital_per_altcoin_usd_example": 100,
+    "total_account_example_usd": 4000
+  },
+
+  "take_profit": {
+    "tp1": {
+      "target": "EMA55 en timeframe de entrada",
+      "close_pct": 25,
+      "notes": "Primer objetivo, cobrar parcial"
+    },
+    "tp2": {
+      "target": "EMA10 en timeframe superior",
+      "close_pct": 25,
+      "notes": "Segundo parcial"
+    },
+    "tp3": {
+      "target": "Resistencia horizontal mayor o zona de distribución",
+      "close_pct": 30,
+      "notes": "Cierre mayoritario cuando aparezca absorción alcista (wick largo)"
+    },
+    "tp_hold": {
+      "target": "1000% de ganancia en futuros o ATH estructural",
+      "close_pct": 20,
+      "notes": "La parte que se deja correr sin miedo"
+    }
+  },
+
+  "stop_loss": {
+    "method": "structural_invalidation_not_fixed_sl",
+    "long_invalidation": {
+      "rule_1": "Cierre de vela en cuerpo por debajo de EMA55 en 1D",
+      "rule_2": "Cruce bajista EMA10/EMA55 en 4H",
+      "rule_3": "12 velas sin retornar al máximo previo (teoría fallida)",
+      "action": "Aplicar cobertura SHORT en vez de cerrar LONG"
+    },
+    "short_invalidation": {
+      "rule_1": "Cierre de vela en cuerpo por encima de EMA10 en timeframe operado",
+      "rule_2": "Cruce alcista EMA10/EMA55",
+      "action": "Cerrar SHORT y reforzar LONG"
+    }
+  },
+
+  "hedge_rules": {
+    "enabled": true,
+    "description": "Cobertura activa: abrir SHORT cuando el LONG está en pérdida y el precio llega a resistencia",
+    "trigger": "Precio alcanza resistencia estructural importante con LONG activo en pérdida",
+    "short_size_vs_long": "Igual o mayor que el LONG para neutralizar",
+    "close_short_condition": "Precio llega a soporte importante (OB, EMA55 1D)",
+    "after_short_closed": "Apalancar el LONG existente",
+    "hedge_exit_strategy": {
+      "step1": "Soltar 20% del LONG cuando el SHORT haya bajado al precio objetivo",
+      "step2": "Cuando el SHORT cierre en ganancia → cerrar LONG completo o mantenerlo si el análisis es válido",
+      "step3": "Si el precio sube a zona de resistencia nuevamente → recargar SHORT"
+    }
+  },
+
+  "dca_rebuys": {
+    "enabled": true,
+    "levels": [
+      { "drop_pct_from_entry": 3, "size_pct": 20, "condition": "EMA55 en 1H" },
+      { "drop_pct_from_entry": 7, "size_pct": 20, "condition": "EMA55 en 4H" },
+      { "drop_pct_from_entry": 12, "size_pct": 20, "condition": "OB en 1D" },
+      { "drop_pct_from_entry": 20, "size_pct": 20, "condition": "EMA55 en 1D" }
+    ],
+    "notes": "Solo hacer recompra si el análisis macro sigue siendo válido"
+  },
+
+  "risk_management": {
+    "max_loss_per_day_pct": 5,
+    "max_drawdown_before_pause_pct": 20,
+    "no_trade_conditions": [
+      "BTC sin dirección clara (EMA10 plana en 4H)",
+      "Squeeze Momentum neutro sin señal",
+      "Precio en rango consolidando sin volumen",
+      "Fin de semana con bajo volumen (viernes tarde - domingo)"
+    ]
+  },
+
+  "exchange_config": {
+    "bybit": {
+      "api_endpoint": "https://api.bybit.com",
+      "testnet_endpoint": "https://api-testnet.bybit.com",
+      "order_type": "limit_preferred",
+      "margin_type": "cross",
+      "position_mode": "one_way",
+      "notes": "Usar modo hedge para abrir LONG y SHORT simultáneos"
+    },
+    "binance_futures": {
+      "api_endpoint": "https://fapi.binance.com",
+      "testnet_endpoint": "https://testnet.binancefuture.com",
+      "order_type": "limit_preferred",
+      "margin_type": "cross",
+      "hedge_mode": true,
+      "notes": "Activar hedge mode para cobertura simultánea"
+    },
+    "bitget": {
+      "notes": "Exchange que usa Jorge, activar dual_position_mode"
+    }
+  },
+
+  "altcoins_watchlist": {
+    "tier_1": ["ETHUSDT", "SOLUSDT", "BNBUSDT"],
+    "tier_2": ["XRPUSDT", "ADAUSDT", "DOTUSDT", "AVAXUSDT", "LINKUSDT"],
+    "tier_3": "ALTs de baja cap solo cuando BTC está en tendencia alcista definida",
+    "rule": "Si BTC es volátil → las ALTs son volátiles. Sync siempre."
+  }
+}

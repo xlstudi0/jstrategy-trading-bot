@@ -1,0 +1,184 @@
+// ============================================================
+// SQUEEZE MOMENTUM — Panel separado para estrategia Jorge
+// Pine Script v5 — Agregar como indicador en panel nuevo
+// ============================================================
+
+//@version=5
+indicator(title="Squeeze Momentum — Jorge",
+          shorttitle="SQZ Jorge",
+          overlay=false)
+
+// ─── INPUTS ──────────────────────────────────────────────────
+bb_len  = input.int(20,   "Bollinger Bands Length")
+bb_mult = input.float(2.0, "BB Multiplier")
+kc_len  = input.int(20,   "Keltner Channel Length")
+kc_mult = input.float(1.5, "KC Multiplier")
+use_tr  = input.bool(true, "Usar True Range para KC")
+
+// ─── BOLLINGER BANDS ─────────────────────────────────────────
+bb_src   = close
+bb_basis = ta.sma(bb_src, bb_len)
+bb_dev   = bb_mult * ta.stdev(bb_src, bb_len)
+bb_upper = bb_basis + bb_dev
+bb_lower = bb_basis - bb_dev
+
+// ─── KELTNER CHANNEL ─────────────────────────────────────────
+kc_basis = ta.ema(bb_src, kc_len)
+kc_range = use_tr ? ta.atr(kc_len) : ta.ema(high - low, kc_len)
+kc_upper = kc_basis + kc_mult * kc_range
+kc_lower = kc_basis - kc_mult * kc_range
+
+// ─── SQUEEZE ─────────────────────────────────────────────────
+sqz_on  = bb_lower > kc_lower and bb_upper < kc_upper
+sqz_off = bb_lower < kc_lower and bb_upper > kc_upper
+
+sqz_just_started  = sqz_on  and not sqz_on[1]   // squeeze se activa
+sqz_just_released = sqz_off and not sqz_off[1]   // squeeze se libera
+
+// ─── MOMENTUM ────────────────────────────────────────────────
+hh    = ta.highest(high, kc_len)
+ll    = ta.lowest(low,   kc_len)
+delta = close - math.avg(math.avg(hh, ll), bb_basis)
+val   = ta.linreg(delta, kc_len, 0)
+
+// Cruce del momentum por la línea cero
+mom_cross_up   = ta.crossover(val, 0)
+mom_cross_down = ta.crossunder(val, 0)
+
+// Disparo final: squeeze liberado con momentum ya en dirección
+sqz_fired_bullish = sqz_just_released and val > 0 and val > val[1]
+sqz_fired_bearish = sqz_just_released and val < 0 and val < val[1]
+
+// Pre-señal: squeeze activo con momentum acelerando (prepararse)
+pre_signal_bull = sqz_on and val > 0 and val > val[1]
+pre_signal_bear = sqz_on and val < 0 and val < val[1]
+
+// ─── COLORES DEL HISTOGRAMA ───────────────────────────────────
+// Verde brillante  = momentum positivo y subiendo (fuerza alcista creciente)
+// Verde oscuro     = momentum positivo pero bajando (fuerza alcista perdiendo vigor)
+// Rojo brillante   = momentum negativo y bajando (fuerza bajista creciente)
+// Rojo oscuro      = momentum negativo pero subiendo (fuerza bajista perdiendo vigor)
+hist_color = (val > 0 ?
+              (val > val[1] ? color.new(#00FF00, 0) : color.new(#006400, 0)) :
+              (val < val[1] ? color.new(#FF0000, 0) : color.new(#8B0000, 0)))
+
+plot(val, "Momentum", color=hist_color, style=plot.style_histogram, linewidth=4)
+
+// ─── PUNTO DE SQUEEZE ────────────────────────────────────────
+// Negro  = squeeze ON  (precio acumulando energía — esperar)
+// Gris   = squeeze OFF (energía liberada — confirmar dirección)
+// Azul   = sin squeeze (condición normal)
+sqz_dot_color = (sqz_on  ? color.black :
+                 sqz_off ? color.new(color.gray, 0) :
+                            color.new(color.blue, 0))
+plot(0, "Squeeze Dot", color=sqz_dot_color, style=plot.style_circles, linewidth=3)
+
+// ─── LÍNEA CERO ──────────────────────────────────────────────
+hline(0, "Cero", color=color.new(color.white, 50), linestyle=hline.style_dashed)
+
+// ─── MARCAS DE EVENTOS ───────────────────────────────────────
+plotshape(sqz_fired_bullish, "Squeeze Liberado Alcista",
+          shape.triangleup, location.bottom, color.new(color.lime, 0),
+          size=size.normal, text="🚀")
+
+plotshape(sqz_fired_bearish, "Squeeze Liberado Bajista",
+          shape.triangledown, location.top, color.new(color.red, 0),
+          size=size.normal, text="💣")
+
+plotshape(mom_cross_up, "Momentum cruza cero ↑",
+          shape.circle, location.bottom, color.new(color.aqua, 0),
+          size=size.tiny)
+
+plotshape(mom_cross_down, "Momentum cruza cero ↓",
+          shape.circle, location.top, color.new(color.orange, 0),
+          size=size.tiny)
+
+// ─── alertcondition — APARECEN EN "CREAR ALERTA" DE TRADINGVIEW
+// Seleccionar este indicador en el desplegable de condición del
+// diálogo "Crear Alerta" y elegir la condición deseada.
+
+alertcondition(sqz_fired_bullish,
+     title  = "⚡🟢 Squeeze Liberado ALCISTA",
+     message= "⚡🟢 SQUEEZE LIBERADO ALCISTA | {{ticker}} {{interval}}\nPrecio: {{close}}\nEl squeeze se liberó con momentum positivo y acelerando.\nMovimiento alcista fuerte probable — Buscar entrada LONG.")
+
+alertcondition(sqz_fired_bearish,
+     title  = "⚡🔴 Squeeze Liberado BAJISTA",
+     message= "⚡🔴 SQUEEZE LIBERADO BAJISTA | {{ticker}} {{interval}}\nPrecio: {{close}}\nEl squeeze se liberó con momentum negativo y acelerando.\nMovimiento bajista fuerte probable — Considerar cobertura SHORT.")
+
+alertcondition(sqz_just_started,
+     title  = "🔒 Squeeze ACTIVADO — Acumulando energía",
+     message= "🔒 SQUEEZE ACTIVADO | {{ticker}} {{interval}}\nPrecio: {{close}}\nBB entró dentro de KC — El precio está acumulando energía.\nPreparar órdenes, el movimiento explosivo se acerca.")
+
+alertcondition(sqz_just_released,
+     title  = "🔓 Squeeze LIBERADO — Confirmar dirección",
+     message= "🔓 SQUEEZE LIBERADO | {{ticker}} {{interval}}\nPrecio: {{close}}\nBB salió del KC — Energía siendo liberada.\nVerificar color del histograma para confirmar dirección.")
+
+alertcondition(mom_cross_up,
+     title  = "↑ Momentum cruza CERO al alza",
+     message= "↑ MOMENTUM CERO→POSITIVO | {{ticker}} {{interval}}\nPrecio: {{close}}\nEl histograma del momentum cruzó la línea cero hacia arriba.\nCambio de momentum a alcista — confirmar con EMAs.")
+
+alertcondition(mom_cross_down,
+     title  = "↓ Momentum cruza CERO a la baja",
+     message= "↓ MOMENTUM CERO→NEGATIVO | {{ticker}} {{interval}}\nPrecio: {{close}}\nEl histograma del momentum cruzó la línea cero hacia abajo.\nCambio de momentum a bajista — proteger posiciones largas.")
+
+alertcondition(pre_signal_bull,
+     title  = "🟡 PRE-SEÑAL LONG — Squeeze ON + Momentum positivo",
+     message= "🟡 PRE-SEÑAL ALCISTA | {{ticker}} {{interval}}\nPrecio: {{close}}\nSqueeze activo con momentum positivo y creciente.\nPreparar orden LONG — esperar liberación del squeeze.")
+
+alertcondition(pre_signal_bear,
+     title  = "🟠 PRE-SEÑAL SHORT — Squeeze ON + Momentum negativo",
+     message= "🟠 PRE-SEÑAL BAJISTA | {{ticker}} {{interval}}\nPrecio: {{close}}\nSqueeze activo con momentum negativo y decreciente.\nPreparar cobertura — esperar liberación del squeeze.")
+
+// ─── TABLA INFORMATIVA ───────────────────────────────────────
+var table sqz_table = table.new(position.top_left, 2, 6,
+                                 border_width=1,
+                                 border_color=color.new(color.gray, 50))
+
+if barstate.islast
+    table.cell(sqz_table, 0, 0, "Estado Squeeze",
+               bgcolor=color.new(color.navy, 20), text_color=color.white, text_size=size.small)
+    table.cell(sqz_table, 1, 0,
+               sqz_on ? "🔒 ON (energía)" : (sqz_off ? "🔓 OFF (liberado)" : "➖ Neutro"),
+               bgcolor=sqz_on ? color.new(color.black, 20) : (sqz_off ? color.new(color.gray, 30) : color.new(color.blue, 50)),
+               text_color=color.white, text_size=size.small)
+
+    table.cell(sqz_table, 0, 1, "Momentum",
+               bgcolor=color.new(color.navy, 20), text_color=color.white, text_size=size.small)
+    table.cell(sqz_table, 1, 1,
+               val > 0 ? "▲ POSITIVO" : "▼ NEGATIVO",
+               bgcolor=val > 0 ? color.new(color.green, 30) : color.new(color.red, 30),
+               text_color=color.white, text_size=size.small)
+
+    table.cell(sqz_table, 0, 2, "Aceleración",
+               bgcolor=color.new(color.navy, 20), text_color=color.white, text_size=size.small)
+    table.cell(sqz_table, 1, 2,
+               val > val[1] ? "↑ Aumentando" : "↓ Disminuyendo",
+               text_size=size.small)
+
+    table.cell(sqz_table, 0, 3, "Cruce cero",
+               bgcolor=color.new(color.navy, 20), text_color=color.white, text_size=size.small)
+    table.cell(sqz_table, 1, 3,
+               mom_cross_up ? "↑ Cruzó arriba" : (mom_cross_down ? "↓ Cruzó abajo" : "Sin cruce"),
+               bgcolor=mom_cross_up ? color.new(color.aqua, 30) : (mom_cross_down ? color.new(color.orange, 30) : color.new(color.gray, 70)),
+               text_size=size.small)
+
+    table.cell(sqz_table, 0, 4, "Disparo",
+               bgcolor=color.new(color.navy, 20), text_color=color.white, text_size=size.small)
+    table.cell(sqz_table, 1, 4,
+               sqz_fired_bullish ? "🚀 ALCISTA" : (sqz_fired_bearish ? "💣 BAJISTA" : "Esperando"),
+               bgcolor=sqz_fired_bullish ? color.new(color.lime, 0) : (sqz_fired_bearish ? color.new(color.red, 0) : color.new(color.gray, 60)),
+               text_color=color.black, text_size=size.small)
+
+    table.cell(sqz_table, 0, 5, "Señal",
+               bgcolor=color.new(color.navy, 20), text_color=color.white, text_size=size.small)
+    signal_str = (sqz_fired_bullish ? "🟢 LONG AHORA" :
+                  pre_signal_bull   ? "🟡 LONG PRONTO" :
+                  sqz_fired_bearish ? "🔴 SHORT AHORA" :
+                  pre_signal_bear   ? "🟠 SHORT PRONTO" : "⬜ Esperar")
+    signal_col = (sqz_fired_bullish ? color.new(color.green,  0) :
+                  pre_signal_bull   ? color.new(color.yellow, 0) :
+                  sqz_fired_bearish ? color.new(color.red,    0) :
+                  pre_signal_bear   ? color.new(color.orange, 0) :
+                                      color.new(color.gray,  50))
+    table.cell(sqz_table, 1, 5, signal_str,
+               bgcolor=signal_col, text_color=color.black, text_size=size.normal)

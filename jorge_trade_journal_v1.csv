@@ -1,0 +1,4 @@
+timestamp,symbol,event,side,mode,price,size,margin_used,pnl_pct,pnl_usdt,balance,entry_type,score,killzone,dow,regime,note
+2026-05-14T17:32:17.869364,BTC/USDT:USDT,open_short_standalone,short,paper,81698.2,0.003672,100.0,,,4900.0,none,0,NY_PM,,unknown,sizing=1.00
+2026-05-15T09:30:22.940651,BTC/USDT:USDT,tp1_short,short,paper,80537.5,0.0007344000000000001,,1.42,20.85,4920.85,,,,4,,
+2026-05-15T09:30:24.560432,BTC/USDT:USDT,short_trail_close,short,paper,80537.5,0.0029376,,1.42,3.41,5004.26,,,,4,,
