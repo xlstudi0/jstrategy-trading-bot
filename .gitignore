@@ -35,3 +35,15 @@ validation_runs/
 
 # ── Material educativo original (682 MB de imágenes/docs, no es código) ──────
 Trading/
+
+# ── Runtime del bot (snapshot inicial conservado en historia git, cambios futuros ignorados) ─
+jorge_bot.log
+bot_stdout.log
+seed_output.log
+jorge_bot_state.json
+jorge_trade_metrics.json
+jorge_trade_journal.csv
+jorge_backtest_metrics.json
+jorge_backtest_result.json
+jorge_backtest_trades.csv
+jorge_backtest_journal.csv
