@@ -149,7 +149,18 @@ CONFIG = {
 
     # Invalidación dura V2. Si el setup no responde, se sale.
     "enable_hard_stop": True,
-    "hard_stop_pct": -0.06,
+    "hard_stop_pct": -0.06,           # fallback estático (usado si dynamic_stop_enabled=False o fail)
+
+    # ── STOP DINÁMICO ─────────────────────────────────────────────────────────
+    # Calcula el stop sobre el swing low/high reciente + buffer ATR. Respeta la
+    # estructura real del precio en vez de un % fijo ciego al contexto.
+    # Clamped entre min_pct y max_pct para evitar stops absurdos.
+    "dynamic_stop_enabled":      _env_bool("JORGE_BOT_DYNAMIC_STOP", True),
+    "dynamic_stop_lookback":     10,      # velas para buscar swing low/high
+    "dynamic_stop_atr_mult":     1.0,     # cuánto buffer ATR debajo/encima del swing
+    "dynamic_stop_atr_period":   14,      # cálculo del ATR (true range medio)
+    "dynamic_stop_max_pct":      0.06,    # tope max (≡ al hard_stop_pct legacy)
+    "dynamic_stop_min_pct":      0.015,   # tope min: stop no más ajustado que 1.5%
 
     # Señales — automatización más estricta
     "min_score_to_enter": 8,
@@ -1173,6 +1184,55 @@ def check_ema_trend_str(df: pd.DataFrame) -> str:
     return "neutral"
 
 
+# ─── STOP DINÁMICO ────────────────────────────────────────────────────────────
+
+def compute_dynamic_stop(df_entry: pd.DataFrame, side: str,
+                         entry_price: float, cfg: dict) -> float:
+    """Calcula stop dinámico: swing low/high reciente + buffer ATR, clamped por max/min %.
+
+    Long: stop = min(swing_low - ATR×k, entry × (1 - max_pct))
+          luego min en absoluto a entry × (1 - min_pct) para no ser demasiado ajustado.
+    Short: análogo invertido (swing high + buffer arriba).
+
+    Retorna precio absoluto del stop. Si los datos son insuficientes, fallback a
+    entry × (1 ∓ hard_stop_pct) — comportamiento legacy.
+    """
+    lookback = int(cfg.get("dynamic_stop_lookback", 10))
+    atr_mult = float(cfg.get("dynamic_stop_atr_mult", 1.0))
+    atr_period = int(cfg.get("dynamic_stop_atr_period", 14))
+    max_pct = float(cfg.get("dynamic_stop_max_pct", 0.06))
+    min_pct = float(cfg.get("dynamic_stop_min_pct", 0.015))
+    fallback_pct = abs(float(cfg.get("hard_stop_pct", -0.06)))
+
+    if df_entry is None or len(df_entry) < max(lookback, atr_period) + 1:
+        return entry_price * (1 - fallback_pct) if side == "long" else entry_price * (1 + fallback_pct)
+
+    recent = df_entry.tail(lookback)
+    # ATR aproximado: True Range medio en últimas atr_period velas
+    h = df_entry["high"].tail(atr_period)
+    l = df_entry["low"].tail(atr_period)
+    c_prev = df_entry["close"].shift(1).tail(atr_period)
+    tr = pd.concat([(h - l), (h - c_prev).abs(), (l - c_prev).abs()], axis=1).max(axis=1)
+    atr = float(tr.mean())
+    if not np.isfinite(atr) or atr <= 0:
+        atr = float((h - l).mean())
+
+    if side == "long":
+        swing_low = float(recent["low"].min())
+        stop = swing_low - atr * atr_mult
+        max_stop = entry_price * (1 - min_pct)   # tope superior del stop (más cerca de entry)
+        min_stop = entry_price * (1 - max_pct)   # tope inferior (más lejos)
+        stop = max(min(stop, max_stop), min_stop)
+    else:  # short
+        swing_high = float(recent["high"].max())
+        stop = swing_high + atr * atr_mult
+        min_stop = entry_price * (1 + min_pct)
+        max_stop = entry_price * (1 + max_pct)
+        stop = min(max(stop, min_stop), max_stop)
+
+    return float(stop)
+
+
 # ─── EVALUADOR DE SEÑAL PRINCIPAL ─────────────────────────────────────────────
 
 def evaluate_signal(df_macro: pd.DataFrame, df_mid: pd.DataFrame,
@@ -1324,7 +1384,7 @@ def evaluate_signal(df_macro: pd.DataFrame, df_mid: pd.DataFrame,
         and vol["bull_without_vol"]
     )
 
-    return {
+    sig = {
         "score": score,
         "score_adjusted": score_long_adjusted,
         "smc_long_bonus": smc_long_bonus,
@@ -1365,6 +1425,18 @@ def evaluate_signal(df_macro: pd.DataFrame, df_mid: pd.DataFrame,
         "regime":     str(mid_last.get("regime", "unknown")),
         "atr_pct":    float(mid_last.get("atr_pct", 0.5) or 0.5),
     }
+
+    # Stop dinámico precomputado para ambos lados (se decide cuál usar al abrir).
+    # En paper, calculamos sobre el precio actual como hipotético entry; en real,
+    # el slippage al market order es despreciable a estos timeframes.
+    _cp = float(df_entry.iloc[-1]["close"])
+    try:
+        sig["dynamic_stop_long"]  = compute_dynamic_stop(df_entry, "long",  _cp, cfg)
+        sig["dynamic_stop_short"] = compute_dynamic_stop(df_entry, "short", _cp, cfg)
+    except Exception:
+        sig["dynamic_stop_long"]  = None
+        sig["dynamic_stop_short"] = None
+    return sig
 
 
 def format_signal_report(sig: dict, symbol: str) -> str:
@@ -1526,6 +1598,10 @@ class PaperPositionManager:
         size = round(size, 6)
         cost = (size * price) / self.cfg["leverage"]
         self.balance -= cost
+        # Stop dinámico (calculado en evaluate_signal). Fallback al estático si está deshabilitado.
+        stop_price = None
+        if self.cfg.get("dynamic_stop_enabled", True) and sig.get("dynamic_stop_long") is not None:
+            stop_price = float(sig["dynamic_stop_long"])
         self.active_long = {
             "entry_price": price,
             "size": size,
@@ -1538,6 +1614,7 @@ class PaperPositionManager:
             "entry_type": sig["entry_type"],
             "mae_pct": 0.0,                                  # peor punto durante el trade
             "mfe_pct": 0.0,                                  # mejor punto durante el trade
+            "stop_price": stop_price,                        # None = usa hard_stop_pct legacy
         }
         self.dca_count = 0
         msg = (f"{self._paper_tag} ✅ LONG ABIERTO | {self.symbol}\n"
@@ -1572,7 +1649,12 @@ class PaperPositionManager:
         self.active_long["mae_pct"] = min(self.active_long.get("mae_pct", 0.0), pnl * 100)
         self.active_long["mfe_pct"] = max(self.active_long.get("mfe_pct", 0.0), pnl * 100)
 
-        if self.cfg.get("enable_hard_stop", True) and pnl <= self.cfg.get("hard_stop_pct", -0.06):
+        # Stop check: dinámico si existe, sino fallback a hard_stop_pct fijo
+        stop_price = self.active_long.get("stop_price")
+        if self.cfg.get("enable_hard_stop", True) and (
+            (stop_price is not None and current_price <= stop_price)
+            or (stop_price is None and pnl <= self.cfg.get("hard_stop_pct", -0.06))
+        ):
             close_size = self.active_long["size"]
             recovered = close_size * entry / self.cfg["leverage"] + close_size * (current_price - entry)
             self.balance += max(recovered, 0)
@@ -1820,6 +1902,9 @@ class PaperPositionManager:
         size = round(size, 6)
         cost = (size * price) / self.cfg["leverage"]
         self.balance -= cost
+        stop_price = None
+        if self.cfg.get("dynamic_stop_enabled", True) and sig.get("dynamic_stop_short") is not None:
+            stop_price = float(sig["dynamic_stop_short"])
         self.active_standalone_short = {
             "entry_price": price,
             "size": size,
@@ -1833,6 +1918,7 @@ class PaperPositionManager:
             "killzone": sig.get("killzone", "n/a"),
             "mae_pct": 0.0,
             "mfe_pct": 0.0,
+            "stop_price": stop_price,
         }
         msg = (f"{self._paper_tag} 🔻 SHORT ABIERTO | {self.symbol}\n"
                f"Precio: {price:.2f} | Tamaño: {size:.6f}\n"
@@ -1870,8 +1956,12 @@ class PaperPositionManager:
         pos["mae_pct"] = min(pos.get("mae_pct", 0.0), gain * 100)
         pos["mfe_pct"] = max(pos.get("mfe_pct", 0.0), gain * 100)
 
-        # Hard stop: precio subió mucho → cierre defensivo
-        if self.cfg.get("enable_hard_stop", True) and gain <= self.cfg.get("hard_stop_pct", -0.06):
+        # Hard stop: precio subió mucho → cierre defensivo (dinámico si disponible)
+        stop_price = pos.get("stop_price")
+        if self.cfg.get("enable_hard_stop", True) and (
+            (stop_price is not None and current_price >= stop_price)
+            or (stop_price is None and gain <= self.cfg.get("hard_stop_pct", -0.06))
+        ):
             close_size = pos["size"]
             recovered = close_size * entry / lev + close_size * (entry - current_price)
             self.balance += max(recovered, 0)
@@ -2330,6 +2420,9 @@ class PositionManager:
                 symbol=self.symbol, type="market", side="buy", amount=size,
                 params={"positionSide": "LONG", "leverage": self.cfg["leverage"]}
             )
+            stop_price = None
+            if self.cfg.get("dynamic_stop_enabled", True) and sig.get("dynamic_stop_long") is not None:
+                stop_price = float(sig["dynamic_stop_long"])
             self.active_long = {
                 "entry_price": price,
                 "size": size,
@@ -2338,6 +2431,7 @@ class PositionManager:
                 "entry_time": datetime.now().isoformat(),
                 "score": sig["score"],
                 "entry_type": sig["entry_type"],
+                "stop_price": stop_price,
             }
             self.dca_count = 0
             save_state(self)
@@ -2371,7 +2465,11 @@ class PositionManager:
         pnl   = (current_price - entry) / entry
         tol   = self.cfg.get("dca_structural_tolerance", 0.015)
 
-        if self.cfg.get("enable_hard_stop", True) and pnl <= self.cfg.get("hard_stop_pct", -0.06):
+        stop_price = self.active_long.get("stop_price")
+        if self.cfg.get("enable_hard_stop", True) and (
+            (stop_price is not None and current_price <= stop_price)
+            or (stop_price is None and pnl <= self.cfg.get("hard_stop_pct", -0.06))
+        ):
             try:
                 pos = self.get_positions()
                 if pos["long"]:
