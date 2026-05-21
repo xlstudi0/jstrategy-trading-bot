@@ -1507,29 +1507,47 @@ def evaluate_signal(df_macro: pd.DataFrame, df_mid: pd.DataFrame,
         sig["dynamic_stop_long"]  = None
         sig["dynamic_stop_short"] = None
 
-    # ── Macro bias 1W (Fase 1: filtro direccional macro) ─────────────────────
+    # ── Macro bias 1W (Fase 1: modulador de sizing, NO bloqueo hard) ─────────
+    # El backtest mostró que bloquear contra-tendencia hard elimina rebotes
+    # técnicos válidos. En su lugar, modulamos sizing:
+    # - Trade a favor del bias: sizing × 1.0
+    # - Trade contra bias con HTF en extremo (discount profundo / premium extremo): × 0.6
+    # - Trade contra bias sin HTF extremo: × 0.3 (no bloqueo, pero size mínimo)
     macro_bias_info = {"bias": "neutral", "reason": "disabled"}
-    block_long, block_short = False, False
+    macro_long_mult, macro_short_mult = 1.0, 1.0
     if cfg.get("macro_high_enabled", True) and df_weekly is not None:
         try:
             macro_bias_info = compute_macro_high_bias(df_weekly, cfg)
             bias = macro_bias_info.get("bias", "neutral")
-            # bias bullish → bloquea shorts excepto alta convicción
-            # bias bearish → bloquea longs excepto alta convicción
-            # high_conviction (score >= 9 tipo A) sobrepasa el bloqueo
-            if bias == "bullish" and not (sig.get("high_conviction") and sig.get("entry_type") == "A"):
-                block_short = True
+            htf_pos = smc.get("htf_range_pos", 0.5) if isinstance(smc, dict) else 0.5
+
+            if bias == "bullish":
+                # longs en bias bullish: sizing full
+                macro_long_mult = 1.0
+                # shorts en bias bullish: only OK si HTF en premium extremo
+                if htf_pos >= 0.80:
+                    macro_short_mult = 0.6   # tomas de ganancia técnicas
+                else:
+                    macro_short_mult = 0.3   # contra-tendencia sin contexto extremo
             elif bias == "bearish":
-                # high conviction long no existe explícitamente, usamos score adj alto
-                if (sig.get("score_adjusted", 0) or 0) < 9:
-                    block_long = True
+                # shorts en bias bearish: sizing full
+                macro_short_mult = 1.0
+                # longs en bias bearish: only OK si HTF en discount extremo (rebote técnico)
+                if htf_pos <= 0.20:
+                    macro_long_mult = 0.6
+                else:
+                    macro_long_mult = 0.3
+            # neutral: ambos full
         except Exception as e:
             logger.debug(f"macro_bias error: {e}")
 
-    sig["macro_high_bias"]     = macro_bias_info.get("bias", "neutral")
-    sig["macro_high_info"]     = macro_bias_info
-    sig["block_long_macro"]    = block_long
-    sig["block_short_macro"]   = block_short
+    sig["macro_high_bias"]      = macro_bias_info.get("bias", "neutral")
+    sig["macro_high_info"]      = macro_bias_info
+    sig["macro_long_sizing"]    = macro_long_mult
+    sig["macro_short_sizing"]   = macro_short_mult
+    # Compatibilidad con código existente — ya no bloqueamos hard
+    sig["block_long_macro"]     = False
+    sig["block_short_macro"]    = False
     return sig
 
 
@@ -3873,22 +3891,21 @@ def run_seed_buckets(cfg: dict = CONFIG):
         if not can_open:
             continue
 
-        # LONG (con filtro macro bias)
+        # LONG (sizing modulado por macro bias 1W)
         if (sig["can_long"]
-                and sig["entry_type"] in cfg.get("allowed_entry_types", ["A", "B", "C"])
-                and not sig.get("block_long_macro", False)):
+                and sig["entry_type"] in cfg.get("allowed_entry_types", ["A", "B", "C"])):
             sig["_adapt_mult"]   = 1.0     # backtest no aplica adaptativo a sí mismo
-            sig["_final_sizing"] = kz_sizing
+            sig["_final_sizing"] = kz_sizing * sig.get("macro_long_sizing", 1.0)
             try:
                 if manager.open_long(price, sig):
                     n_long += 1
             except Exception:
                 pass
-        # SHORT (con filtro macro bias)
-        elif (sig.get("can_short_standalone") and bt_cfg.get("shorts_enabled", True)
-                and not sig.get("block_short_macro", False)):
+        # SHORT (sizing modulado por macro bias 1W)
+        elif (sig.get("can_short_standalone") and bt_cfg.get("shorts_enabled", True)):
+            short_size = kz_sizing * sig.get("macro_short_sizing", 1.0)
             try:
-                if manager.open_short_standalone(price, sig, sizing_mult=kz_sizing):
+                if manager.open_short_standalone(price, sig, sizing_mult=short_size):
                     n_short += 1
             except Exception:
                 pass
