@@ -120,7 +120,9 @@ CONFIG = {
     # Solo opera longs cuando bias 1W es bullish (precio > EMA21W rising)
     # Solo opera shorts cuando bias 1W es bearish. En 1W neutral: solo trades alta convicción.
     "timeframe_macro_high":   "1w",
-    "macro_high_enabled":     _env_bool("JORGE_BOT_MACRO_HIGH", True),
+    # Backtest 2026-02 a 2026-05 mostró que el modulador 1W reduce PnL.
+    # Apagado por default; infraestructura disponible para Fase 2 (régimen-aware).
+    "macro_high_enabled":     _env_bool("JORGE_BOT_MACRO_HIGH", False),
     "macro_high_ema_period":  21,        # EMA21W: estándar de tendencia macro
     "macro_high_min_candles": 50,        # mínimo de velas semanales para que tenga sentido
 
@@ -131,18 +133,41 @@ CONFIG = {
     "position_parts": 5,         # 1 entrada inicial + 4 DCA moderados
 
     # Take profit V2: más realista para intradía/swing corto y para un objetivo diario de 10-20 USDT.
-    # ── TPs y runner: filosofía "small constant + big when extends" ─────────
-    # TP1 agresivo cierra más temprano y más cantidad → asegura caja rápido.
-    # Runner (15%) post-TP3 captura movimientos extendidos sin cap superior.
-    # Stop progresa: entry → breakeven (post-TP2) → TP2 price (post-TP3) → ATR trail (runner).
-    "tp1_pct": 0.008,            # +0.8% precio (antes 1.0%) → caja rápida
-    "tp1_close_pct": 0.30,       # 30% de la posición (antes 20%)
-    "tp2_pct": 0.016,            # +1.6% precio (antes 2.0%)
-    "tp2_close_pct": 0.30,       # 30% (antes 20%)
-    "tp3_pct": 0.028,            # +2.8% precio (antes 3.5%)
-    "tp3_close_pct": 0.25,       # 25% (antes 30%) → deja 15% como runner
-    "tp_hold_pct": 0.15,         # 15% restante = runner sin TP fijo, trail ATR
-    "runner_trail_atr_mult": 2.0,  # buffer ATR para el trail del runner
+    # ── TPs y runner: BASELINE (usado si régimen no clasifica o si regime_aware=False) ──
+    # Fase 2 sobreescribe estos valores por régimen vía regime_tps.
+    "tp1_pct": 0.008,            # +0.8% precio
+    "tp1_close_pct": 0.30,       # 30%
+    "tp2_pct": 0.016,            # +1.6%
+    "tp2_close_pct": 0.30,       # 30%
+    "tp3_pct": 0.028,            # +2.8%
+    "tp3_close_pct": 0.25,       # 25% → deja 15% como runner
+    "tp_hold_pct": 0.15,         # 15% runner
+    "runner_trail_atr_mult": 2.0,
+
+    # ── FASE 2: Régimen-aware execution ──────────────────────────────────────
+    # El bot cambia TPs, sizing y filtros según el régimen detectado:
+    # - expansion: tendencia fuerte + volatilidad alta → TPs AMPLIOS (deja correr)
+    # - trending:  tendencia firme, vol normal → TPs medios
+    # - ranging:   sin tendencia, vol normal → TPs AJUSTADOS (scalping mean-reversion)
+    # - exhaustion: vol alta sin tendencia → reducir sizing, solo trades A
+    # - quiet:     vol baja sin tendencia → NO operar
+    "regime_aware_enabled": _env_bool("JORGE_BOT_REGIME_AWARE", True),
+    "regime_tps": {
+        "expansion":  {"tp1_pct": 0.015, "tp1_close": 0.20, "tp2_pct": 0.030, "tp2_close": 0.25, "tp3_pct": 0.050, "tp3_close": 0.30, "runner": 0.25, "trail_atr": 2.5},
+        "trending":   {"tp1_pct": 0.010, "tp1_close": 0.25, "tp2_pct": 0.020, "tp2_close": 0.30, "tp3_pct": 0.035, "tp3_close": 0.25, "runner": 0.20, "trail_atr": 2.0},
+        "ranging":    {"tp1_pct": 0.006, "tp1_close": 0.35, "tp2_pct": 0.012, "tp2_close": 0.35, "tp3_pct": 0.020, "tp3_close": 0.25, "runner": 0.05, "trail_atr": 1.5},
+        "exhaustion": {"tp1_pct": 0.008, "tp1_close": 0.40, "tp2_pct": 0.014, "tp2_close": 0.35, "tp3_pct": 0.022, "tp3_close": 0.20, "runner": 0.05, "trail_atr": 1.5},
+    },
+    "regime_sizing": {
+        "expansion":  1.00,
+        "trending":   1.00,
+        "ranging":    0.80,
+        "exhaustion": 0.50,
+        "quiet":      0.0,    # 0 = no operar
+        "warmup":     0.50,
+    },
+    "regime_block_entries": ["quiet"],          # regímenes donde NO se entra
+    "regime_only_high_conviction": ["exhaustion"],  # regímenes que requieren score alto
 
     # DCA V2: escalado moderado. Se evita el martingale agresivo.
     "dca_levels_pct": [-0.015, -0.03, -0.045, -0.06],
@@ -771,7 +796,7 @@ def _detect_smc(df: pd.DataFrame, sweep_lookback: int = 20,
     df["fvg_up_recent"]   = df["imbalance_up"].rolling(5).max().fillna(0).astype(bool)
     df["fvg_down_recent"] = df["imbalance_down"].rolling(5).max().fillna(0).astype(bool)
 
-    # Régimen de mercado: TRENDING / RANGING / EXPANSION / EXHAUSTION
+    # Régimen de mercado: EXPANSION / TRENDING / RANGING / EXHAUSTION / QUIET
     # Combina ADX (fuerza tendencial) con percentil ATR (volatilidad relativa)
     if "adx" in df.columns:
         atr_now = (h - l).rolling(14).mean()
@@ -787,6 +812,8 @@ def _detect_smc(df: pd.DataFrame, sweep_lookback: int = 20,
                 regime.append("trending")     # tendencia fuerte, vol normal
             elif atr_p >= 0.85:
                 regime.append("exhaustion")   # vol alta sin tendencia = movimientos erráticos, peligro
+            elif adx_val < 15 and atr_p < 0.30:
+                regime.append("quiet")        # sin tendencia, sin volatilidad → no operar
             else:
                 regime.append("ranging")      # vol normal/baja, sin tendencia
         df["regime"]  = regime
@@ -1714,6 +1741,11 @@ class PaperPositionManager:
         stop_price = None
         if self.cfg.get("dynamic_stop_enabled", True) and sig.get("dynamic_stop_long") is not None:
             stop_price = float(sig["dynamic_stop_long"])
+
+        # Régimen al abrir → snapshot de TPs específicos para este trade
+        regime = sig.get("regime", "warmup")
+        regime_tps = self.cfg.get("regime_tps", {}).get(regime) if self.cfg.get("regime_aware_enabled", True) else None
+
         self.active_long = {
             "entry_price": price,
             "size": size,
@@ -1727,6 +1759,8 @@ class PaperPositionManager:
             "mae_pct": 0.0,                                  # peor punto durante el trade
             "mfe_pct": 0.0,                                  # mejor punto durante el trade
             "stop_price": stop_price,                        # None = usa hard_stop_pct legacy
+            "regime_at_entry": regime,
+            "regime_tps":      regime_tps,                   # None → usa TPs del CONFIG global
         }
         self.dca_count = 0
         msg = (f"{self._paper_tag} ✅ LONG ABIERTO | {self.symbol}\n"
@@ -1833,11 +1867,20 @@ class PaperPositionManager:
         # Fórmula: margen_devuelto + PnL_realizado
         # = close_size × entry/leverage + close_size × (current_price - entry)
         lev = self.cfg["leverage"]
-        tp_levels = [
-            (self.cfg["tp1_pct"], self.cfg.get("tp1_close_pct", 0.30)),
-            (self.cfg["tp2_pct"], self.cfg.get("tp2_close_pct", 0.30)),
-            (self.cfg["tp3_pct"], self.cfg.get("tp3_close_pct", 0.25)),
-        ]
+        # Fase 2: usar TPs específicos del régimen al entrar (snapshot al open)
+        regime_tps = self.active_long.get("regime_tps")
+        if regime_tps:
+            tp_levels = [
+                (regime_tps["tp1_pct"], regime_tps["tp1_close"]),
+                (regime_tps["tp2_pct"], regime_tps["tp2_close"]),
+                (regime_tps["tp3_pct"], regime_tps["tp3_close"]),
+            ]
+        else:
+            tp_levels = [
+                (self.cfg["tp1_pct"], self.cfg.get("tp1_close_pct", 0.30)),
+                (self.cfg["tp2_pct"], self.cfg.get("tp2_close_pct", 0.30)),
+                (self.cfg["tp3_pct"], self.cfg.get("tp3_close_pct", 0.25)),
+            ]
         for i, (tp_pct, close_pct) in enumerate(tp_levels):
             if pnl >= tp_pct and i not in self.active_long["tp_done"]:
                 close_size = self.active_long["size"] * close_pct
@@ -1854,7 +1897,8 @@ class PaperPositionManager:
                     self.active_long["stop_price"] = float(entry)
                     logger.info(f"{self._paper_tag} 🔒 Stop movido a breakeven ({entry:.2f}) post-TP2")
                 elif i == 2:  # TP3
-                    tp2_price = float(entry * (1 + self.cfg["tp2_pct"]))
+                    tp2_pct_used = regime_tps["tp2_pct"] if regime_tps else self.cfg["tp2_pct"]
+                    tp2_price = float(entry * (1 + tp2_pct_used))
                     self.active_long["stop_price"] = tp2_price
                     logger.info(f"{self._paper_tag} 🔒 Stop movido a TP2 ({tp2_price:.2f}) post-TP3 — runner activo")
 
@@ -1880,7 +1924,8 @@ class PaperPositionManager:
         # ── Runner post-TP3: trail dinámico ATR — solo sube, nunca baja
         if (self.active_long and 2 in self.active_long.get("tp_done", [])
                 and df_entry is not None and len(df_entry) >= 14):
-            tr_mult = float(self.cfg.get("runner_trail_atr_mult", 2.0))
+            # Trail buffer del régimen al entrar (más amplio en expansion, ajustado en ranging)
+            tr_mult = float(regime_tps["trail_atr"]) if regime_tps else float(self.cfg.get("runner_trail_atr_mult", 2.0))
             recent_h = df_entry["high"].tail(14)
             recent_l = df_entry["low"].tail(14)
             atr = float((recent_h - recent_l).mean())
@@ -2056,6 +2101,10 @@ class PaperPositionManager:
         stop_price = None
         if self.cfg.get("dynamic_stop_enabled", True) and sig.get("dynamic_stop_short") is not None:
             stop_price = float(sig["dynamic_stop_short"])
+
+        regime = sig.get("regime", "warmup")
+        regime_tps = self.cfg.get("regime_tps", {}).get(regime) if self.cfg.get("regime_aware_enabled", True) else None
+
         self.active_standalone_short = {
             "entry_price": price,
             "size": size,
@@ -2070,6 +2119,8 @@ class PaperPositionManager:
             "mae_pct": 0.0,
             "mfe_pct": 0.0,
             "stop_price": stop_price,
+            "regime_at_entry": regime,
+            "regime_tps":      regime_tps,
         }
         msg = (f"{self._paper_tag} 🔻 SHORT ABIERTO | {self.symbol}\n"
                f"Precio: {price:.2f} | Tamaño: {size:.6f}\n"
@@ -2167,12 +2218,20 @@ class PaperPositionManager:
                 _save_trade_metrics_snapshot(self.cfg)
                 send_telegram(msg, self.cfg)
 
-        # TPs parciales — precio bajó a favor del short
-        tp_levels = [
-            (self.cfg["tp1_pct"], self.cfg.get("tp1_close_pct", 0.30)),
-            (self.cfg["tp2_pct"], self.cfg.get("tp2_close_pct", 0.30)),
-            (self.cfg["tp3_pct"], self.cfg.get("tp3_close_pct", 0.25)),
-        ]
+        # TPs parciales — precio bajó a favor del short (régimen-aware)
+        regime_tps = pos.get("regime_tps")
+        if regime_tps:
+            tp_levels = [
+                (regime_tps["tp1_pct"], regime_tps["tp1_close"]),
+                (regime_tps["tp2_pct"], regime_tps["tp2_close"]),
+                (regime_tps["tp3_pct"], regime_tps["tp3_close"]),
+            ]
+        else:
+            tp_levels = [
+                (self.cfg["tp1_pct"], self.cfg.get("tp1_close_pct", 0.30)),
+                (self.cfg["tp2_pct"], self.cfg.get("tp2_close_pct", 0.30)),
+                (self.cfg["tp3_pct"], self.cfg.get("tp3_close_pct", 0.25)),
+            ]
         for i, (tp_pct, close_pct) in enumerate(tp_levels):
             if gain >= tp_pct and i not in pos["tp_done"]:
                 close_size = pos["size"] * close_pct
@@ -2189,7 +2248,8 @@ class PaperPositionManager:
                     pos["stop_price"] = float(entry)
                     logger.info(f"{self._paper_tag} 🔒 Stop SHORT movido a breakeven ({entry:.2f}) post-TP2")
                 elif i == 2:  # TP3
-                    tp2_price = float(entry * (1 - self.cfg["tp2_pct"]))   # short: stop ARRIBA del entry, pero lock = precio TP2 (debajo entry)
+                    tp2_pct_used = regime_tps["tp2_pct"] if regime_tps else self.cfg["tp2_pct"]
+                    tp2_price = float(entry * (1 - tp2_pct_used))
                     pos["stop_price"] = tp2_price
                     logger.info(f"{self._paper_tag} 🔒 Stop SHORT movido a TP2 ({tp2_price:.2f}) post-TP3 — runner activo")
 
@@ -3342,14 +3402,24 @@ def run_bot(cfg: dict = CONFIG):
                     )
 
                     # ── LONG
+                    # Fase 2: gate por régimen
+                    regime_now = sig.get("regime", "warmup")
+                    regime_block = regime_now in cfg.get("regime_block_entries", [])
+                    regime_high_conv_only = regime_now in cfg.get("regime_only_high_conviction", [])
+                    regime_size_mult = cfg.get("regime_sizing", {}).get(regime_now, 1.0)
+
                     if can_open and sig["can_long"]:
                         now = datetime.now()
                         skip_reason = None
 
-                        if cfg.get("weekend_filter", True) and now.weekday() >= 5:
+                        if regime_block:
+                            skip_reason = f"Régimen {regime_now} → no operar"
+                        elif regime_high_conv_only and sig.get("entry_type") != "A":
+                            skip_reason = f"Régimen {regime_now} solo permite tipo A"
+                        elif cfg.get("weekend_filter", True) and now.weekday() >= 5:
                             skip_reason = f"Fin de semana — esperando lunes"
                         elif sig.get("block_long_macro"):
-                            skip_reason = f"Macro bias 1W bajista (precio<EMA21W) — bloqueando longs no high-conviction"
+                            skip_reason = f"Macro bias 1W bajista — bloqueando longs no high-conviction"
                         elif sig["entry_type"] not in cfg.get("allowed_entry_types", ["A", "B", "C"]):
                             skip_reason = f"Tipo {sig['entry_type']} fuera de la lista operable"
                         elif cfg.get("require_adx_trend", True) and not sig["adx"]["trend"]:
@@ -3387,7 +3457,7 @@ def run_bot(cfg: dict = CONFIG):
                                     )
                                 except Exception as e:
                                     logger.debug(f"adaptive sizing error: {e}")
-                            final_mult = kz_sizing * adapt_mult
+                            final_mult = kz_sizing * adapt_mult * regime_size_mult * sig.get("macro_long_sizing", 1.0)
                             sig["_adapt_mult"]   = adapt_mult
                             sig["_final_sizing"] = final_mult
                             lunes = " 🌟 Lunes" if now.weekday() == 0 else ""
@@ -3439,7 +3509,7 @@ def run_bot(cfg: dict = CONFIG):
                                     )
                                 except Exception as e:
                                     logger.debug(f"adaptive sizing error: {e}")
-                            final_mult = kz_sizing * adapt_mult
+                            final_mult = kz_sizing * adapt_mult * regime_size_mult * sig.get("macro_short_sizing", 1.0)
                             logger.info(f"🔻 {sym} SHORT | Score: {sig.get('score_short_adjusted')}/13 | "
                                         f"Tipo {st_type} | KZ: {kz_name} ×{kz_sizing:.2f} | "
                                         f"adapt ×{adapt_mult:.2f} → final ×{final_mult:.2f}")
@@ -3891,19 +3961,30 @@ def run_seed_buckets(cfg: dict = CONFIG):
         if not can_open:
             continue
 
-        # LONG (sizing modulado por macro bias 1W)
+        # Fase 2: filtro régimen + multiplicador de sizing
+        regime_now = sig.get("regime", "warmup")
+        regime_block = regime_now in bt_cfg.get("regime_block_entries", [])
+        regime_high_conv_only = regime_now in bt_cfg.get("regime_only_high_conviction", [])
+        regime_size_mult = bt_cfg.get("regime_sizing", {}).get(regime_now, 1.0)
+
+        if regime_block:
+            continue   # quiet régime → no operar
+
+        # LONG (régimen + macro bias 1W + killzone)
         if (sig["can_long"]
-                and sig["entry_type"] in cfg.get("allowed_entry_types", ["A", "B", "C"])):
-            sig["_adapt_mult"]   = 1.0     # backtest no aplica adaptativo a sí mismo
-            sig["_final_sizing"] = kz_sizing * sig.get("macro_long_sizing", 1.0)
+                and sig["entry_type"] in cfg.get("allowed_entry_types", ["A", "B", "C"])
+                and not (regime_high_conv_only and sig.get("entry_type") != "A")):
+            sig["_adapt_mult"]   = 1.0
+            sig["_final_sizing"] = kz_sizing * sig.get("macro_long_sizing", 1.0) * regime_size_mult
             try:
                 if manager.open_long(price, sig):
                     n_long += 1
             except Exception:
                 pass
-        # SHORT (sizing modulado por macro bias 1W)
-        elif (sig.get("can_short_standalone") and bt_cfg.get("shorts_enabled", True)):
-            short_size = kz_sizing * sig.get("macro_short_sizing", 1.0)
+        # SHORT
+        elif (sig.get("can_short_standalone") and bt_cfg.get("shorts_enabled", True)
+                and not (regime_high_conv_only and sig.get("short_entry_type") != "A_sweep")):
+            short_size = kz_sizing * sig.get("macro_short_sizing", 1.0) * regime_size_mult
             try:
                 if manager.open_short_standalone(price, sig, sizing_mult=short_size):
                     n_short += 1
