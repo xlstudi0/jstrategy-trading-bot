@@ -152,10 +152,13 @@ CONFIG = {
     # - exhaustion: vol alta sin tendencia → reducir sizing, solo trades A
     # - quiet:     vol baja sin tendencia → NO operar
     "regime_aware_enabled": _env_bool("JORGE_BOT_REGIME_AWARE", True),
+    # TPs calibrados conservadores: cerca del baseline v2 (que ya funciona) con
+    # pequeñas adaptaciones. Backtest mostró que TPs amplios (3-5%) no se
+    # ejecutaban en mercados típicos. Mejor mantenerse cerca de v2.
     "regime_tps": {
-        "expansion":  {"tp1_pct": 0.015, "tp1_close": 0.20, "tp2_pct": 0.030, "tp2_close": 0.25, "tp3_pct": 0.050, "tp3_close": 0.30, "runner": 0.25, "trail_atr": 2.5},
-        "trending":   {"tp1_pct": 0.010, "tp1_close": 0.25, "tp2_pct": 0.020, "tp2_close": 0.30, "tp3_pct": 0.035, "tp3_close": 0.25, "runner": 0.20, "trail_atr": 2.0},
-        "ranging":    {"tp1_pct": 0.006, "tp1_close": 0.35, "tp2_pct": 0.012, "tp2_close": 0.35, "tp3_pct": 0.020, "tp3_close": 0.25, "runner": 0.05, "trail_atr": 1.5},
+        "expansion":  {"tp1_pct": 0.010, "tp1_close": 0.25, "tp2_pct": 0.020, "tp2_close": 0.30, "tp3_pct": 0.035, "tp3_close": 0.25, "runner": 0.20, "trail_atr": 2.5},
+        "trending":   {"tp1_pct": 0.008, "tp1_close": 0.30, "tp2_pct": 0.016, "tp2_close": 0.30, "tp3_pct": 0.028, "tp3_close": 0.25, "runner": 0.15, "trail_atr": 2.0},
+        "ranging":    {"tp1_pct": 0.008, "tp1_close": 0.30, "tp2_pct": 0.016, "tp2_close": 0.30, "tp3_pct": 0.028, "tp3_close": 0.25, "runner": 0.15, "trail_atr": 2.0},
         "exhaustion": {"tp1_pct": 0.008, "tp1_close": 0.40, "tp2_pct": 0.014, "tp2_close": 0.35, "tp3_pct": 0.022, "tp3_close": 0.20, "runner": 0.05, "trail_atr": 1.5},
     },
     "regime_sizing": {
