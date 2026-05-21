@@ -172,6 +172,19 @@ CONFIG = {
     "regime_block_entries": ["quiet"],          # regímenes donde NO se entra
     "regime_only_high_conviction": ["exhaustion"],  # regímenes que requieren score alto
 
+    # ── FASE 3: Funding rate awareness ───────────────────────────────────────
+    # Lee funding rate de Binance Futures y modula sizing:
+    # - Funding > 0.05% (longs sobre-apalancados): sesgo SHORT, reduce LONG sizing
+    # - Funding < -0.03% (shorts sobre-apalancados): sesgo LONG, reduce SHORT sizing
+    # Funding extremo = cascada de liquidación probable → aprovecharla en la dirección correcta
+    "funding_aware_enabled":  _env_bool("JORGE_BOT_FUNDING_AWARE", True),
+    "funding_extreme_long":   0.0005,    # 0.05% — long-heavy
+    "funding_extreme_short":  -0.0003,   # -0.03% — short-heavy
+    "funding_long_penalty":   0.6,       # multiplicador sizing LONG si funding extremo positivo
+    "funding_short_penalty":  0.6,       # multiplicador sizing SHORT si funding extremo negativo
+    "funding_long_boost":     1.2,       # boost sizing LONG si funding negativo (shorts cargados)
+    "funding_short_boost":    1.2,       # boost sizing SHORT si funding positivo (longs cargados)
+
     # DCA V2: escalado moderado. Se evita el martingale agresivo.
     "dca_levels_pct": [-0.015, -0.03, -0.045, -0.06],
     "dca_size_multipliers": [0.50, 0.75, 1.00, 1.25],
@@ -1229,6 +1242,58 @@ def check_ema_trend_str(df: pd.DataFrame) -> str:
     return "neutral"
 
 
+# ─── FUNDING RATE AWARENESS ──────────────────────────────────────────────────
+
+def fetch_funding_rate_history(exchange, symbol: str, limit: int = 200) -> pd.DataFrame:
+    """Descarga histórico de funding rate (Binance Futures: cada 8h).
+
+    Retorna DataFrame con index = timestamp, columna 'funding_rate'.
+    Si falla (sandbox, exchange no soportado), retorna DataFrame vacío.
+    """
+    try:
+        # ccxt unified method (cuando disponible) o fallback al endpoint nativo
+        if hasattr(exchange, "fapiPublicGetFundingRate"):
+            raw = exchange.fapiPublicGetFundingRate({"symbol": symbol.replace("/", "").replace(":USDT", ""), "limit": limit})
+            rows = [(int(r["fundingTime"]), float(r["fundingRate"])) for r in raw]
+        else:
+            raw = exchange.fetch_funding_rate_history(symbol, limit=limit)
+            rows = [(int(r["timestamp"]), float(r["fundingRate"])) for r in raw]
+        if not rows:
+            return pd.DataFrame()
+        df = pd.DataFrame(rows, columns=["timestamp", "funding_rate"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+        df.set_index("timestamp", inplace=True)
+        return df
+    except Exception as e:
+        logger.debug(f"fetch_funding_rate: {e}")
+        return pd.DataFrame()
+
+
+def classify_funding_state(funding_value: float, cfg: dict) -> str:
+    """Clasifica funding rate en: 'long_loaded' | 'short_loaded' | 'neutral'."""
+    if funding_value is None or pd.isna(funding_value):
+        return "neutral"
+    if funding_value >= cfg.get("funding_extreme_long", 0.0005):
+        return "long_loaded"
+    if funding_value <= cfg.get("funding_extreme_short", -0.0003):
+        return "short_loaded"
+    return "neutral"
+
+
+def compute_funding_sizing(funding_state: str, cfg: dict) -> tuple:
+    """Retorna (long_mult, short_mult) según el estado del funding."""
+    long_mult, short_mult = 1.0, 1.0
+    if funding_state == "long_loaded":
+        # Longs sobre-apalancados → cascada de liquidación likely → favor SHORT
+        long_mult  = float(cfg.get("funding_long_penalty", 0.6))
+        short_mult = float(cfg.get("funding_short_boost",  1.2))
+    elif funding_state == "short_loaded":
+        # Shorts sobre-apalancados → squeeze likely → favor LONG
+        long_mult  = float(cfg.get("funding_long_boost",   1.2))
+        short_mult = float(cfg.get("funding_short_penalty", 0.6))
+    return long_mult, short_mult
+
+
 # ─── MACRO BIAS 1W ────────────────────────────────────────────────────────────
 
 def compute_macro_high_bias(df_weekly: pd.DataFrame, cfg: dict) -> dict:
@@ -1334,12 +1399,16 @@ def compute_dynamic_stop(df_entry: pd.DataFrame, side: str,
 
 def evaluate_signal(df_macro: pd.DataFrame, df_mid: pd.DataFrame,
                     df_entry: pd.DataFrame, cfg: dict,
-                    df_weekly: Optional[pd.DataFrame] = None) -> dict:
+                    df_weekly: Optional[pd.DataFrame] = None,
+                    df_funding: Optional[pd.DataFrame] = None,
+                    current_ts=None) -> dict:
     """
     Evalúa los 10 ARGUMENTOS y retorna el análisis completo.
     Score de 0 a 10; cada argumento vale 1 punto.
 
-    df_weekly: opcional, para el bias macro 1W (Fase 1 del upgrade).
+    df_weekly: opcional, para el bias macro 1W (Fase 1).
+    df_funding: opcional, histórico de funding rate (Fase 3).
+    current_ts: timestamp del momento de evaluación (para slicing del funding histórico).
     """
     tf_conf   = check_multi_tf_confirmation(df_macro, df_mid, df_entry)
     sr        = check_sr_level(df_mid)
@@ -1578,6 +1647,31 @@ def evaluate_signal(df_macro: pd.DataFrame, df_mid: pd.DataFrame,
     # Compatibilidad con código existente — ya no bloqueamos hard
     sig["block_long_macro"]     = False
     sig["block_short_macro"]    = False
+
+    # ── Fase 3: Funding rate awareness ───────────────────────────────────────
+    funding_state = "neutral"
+    funding_val   = None
+    funding_long_mult, funding_short_mult = 1.0, 1.0
+    if cfg.get("funding_aware_enabled", True) and df_funding is not None and len(df_funding) > 0:
+        try:
+            if current_ts is not None:
+                # backtest: slice del funding histórico hasta el ts actual
+                df_f_slice = df_funding[df_funding.index <= current_ts]
+                if len(df_f_slice) > 0:
+                    funding_val = float(df_f_slice["funding_rate"].iloc[-1])
+            else:
+                # live: último valor del funding
+                funding_val = float(df_funding["funding_rate"].iloc[-1])
+            if funding_val is not None:
+                funding_state = classify_funding_state(funding_val, cfg)
+                funding_long_mult, funding_short_mult = compute_funding_sizing(funding_state, cfg)
+        except Exception as e:
+            logger.debug(f"funding eval: {e}")
+    sig["funding_rate"]         = funding_val
+    sig["funding_state"]        = funding_state
+    sig["funding_long_sizing"]  = funding_long_mult
+    sig["funding_short_sizing"] = funding_short_mult
+
     return sig
 
 
@@ -3363,7 +3457,15 @@ def run_bot(cfg: dict = CONFIG):
                         except Exception as e:
                             logger.debug(f"1W fetch error: {e}")
 
-                    sig   = evaluate_signal(df_macro, df_mid, df_entry, sym_cfg, df_weekly=df_weekly)
+                    df_funding = None
+                    if cfg.get("funding_aware_enabled", True):
+                        try:
+                            df_funding = fetch_funding_rate_history(exchange, sym, limit=50)
+                        except Exception as e:
+                            logger.debug(f"funding fetch error: {e}")
+
+                    sig   = evaluate_signal(df_macro, df_mid, df_entry, sym_cfg,
+                                            df_weekly=df_weekly, df_funding=df_funding)
                     price = sig["current_price"]
 
                     # Etiquetar killzone en la signal para los managers
@@ -3460,7 +3562,9 @@ def run_bot(cfg: dict = CONFIG):
                                     )
                                 except Exception as e:
                                     logger.debug(f"adaptive sizing error: {e}")
-                            final_mult = kz_sizing * adapt_mult * regime_size_mult * sig.get("macro_long_sizing", 1.0)
+                            final_mult = (kz_sizing * adapt_mult * regime_size_mult
+                                          * sig.get("macro_long_sizing", 1.0)
+                                          * sig.get("funding_long_sizing", 1.0))
                             sig["_adapt_mult"]   = adapt_mult
                             sig["_final_sizing"] = final_mult
                             lunes = " 🌟 Lunes" if now.weekday() == 0 else ""
@@ -3512,7 +3616,9 @@ def run_bot(cfg: dict = CONFIG):
                                     )
                                 except Exception as e:
                                     logger.debug(f"adaptive sizing error: {e}")
-                            final_mult = kz_sizing * adapt_mult * regime_size_mult * sig.get("macro_short_sizing", 1.0)
+                            final_mult = (kz_sizing * adapt_mult * regime_size_mult
+                                          * sig.get("macro_short_sizing", 1.0)
+                                          * sig.get("funding_short_sizing", 1.0))
                             logger.info(f"🔻 {sym} SHORT | Score: {sig.get('score_short_adjusted')}/13 | "
                                         f"Tipo {st_type} | KZ: {kz_name} ×{kz_sizing:.2f} | "
                                         f"adapt ×{adapt_mult:.2f} → final ×{final_mult:.2f}")
@@ -3897,6 +4003,17 @@ def run_seed_buckets(cfg: dict = CONFIG):
         except Exception as e:
             print(f"  ⚠️  No se pudo cargar 1W para macro bias: {e}")
 
+    df_funding = None
+    if bt_cfg.get("funding_aware_enabled", True):
+        try:
+            df_funding = fetch_funding_rate_history(exchange, cfg["symbol"], limit=500)
+            if len(df_funding) > 0:
+                print(f"  Funding rate histórico: {len(df_funding)} entries (cada 8h)")
+            else:
+                print("  ⚠️  Funding rate vacío — saltando feature")
+        except Exception as e:
+            print(f"  ⚠️  No se pudo cargar funding rate: {e}")
+
     print(f"  Velas entry: {len(df_entry)} | mid: {len(df_mid)} | macro: {len(df_macro)}")
 
     manager = PaperPositionManager(bt_cfg)
@@ -3932,7 +4049,8 @@ def run_seed_buckets(cfg: dict = CONFIG):
         if df_weekly is not None:
             dw = df_weekly[df_weekly.index <= ts]
         try:
-            sig = evaluate_signal(dm, dmi, de, bt_cfg, df_weekly=dw)
+            sig = evaluate_signal(dm, dmi, de, bt_cfg, df_weekly=dw,
+                                  df_funding=df_funding, current_ts=ts)
         except Exception:
             continue
         sig["killzone"] = kz["name"] if kz else "OFF"
@@ -3973,12 +4091,17 @@ def run_seed_buckets(cfg: dict = CONFIG):
         if regime_block:
             continue   # quiet régime → no operar
 
-        # LONG (régimen + macro bias 1W + killzone)
+        # LONG (régimen + macro bias 1W + killzone + funding)
         if (sig["can_long"]
                 and sig["entry_type"] in cfg.get("allowed_entry_types", ["A", "B", "C"])
                 and not (regime_high_conv_only and sig.get("entry_type") != "A")):
             sig["_adapt_mult"]   = 1.0
-            sig["_final_sizing"] = kz_sizing * sig.get("macro_long_sizing", 1.0) * regime_size_mult
+            sig["_final_sizing"] = (
+                kz_sizing
+                * sig.get("macro_long_sizing", 1.0)
+                * regime_size_mult
+                * sig.get("funding_long_sizing", 1.0)
+            )
             try:
                 if manager.open_long(price, sig):
                     n_long += 1
@@ -3987,7 +4110,12 @@ def run_seed_buckets(cfg: dict = CONFIG):
         # SHORT
         elif (sig.get("can_short_standalone") and bt_cfg.get("shorts_enabled", True)
                 and not (regime_high_conv_only and sig.get("short_entry_type") != "A_sweep")):
-            short_size = kz_sizing * sig.get("macro_short_sizing", 1.0) * regime_size_mult
+            short_size = (
+                kz_sizing
+                * sig.get("macro_short_sizing", 1.0)
+                * regime_size_mult
+                * sig.get("funding_short_sizing", 1.0)
+            )
             try:
                 if manager.open_short_standalone(price, sig, sizing_mult=short_size):
                     n_short += 1
