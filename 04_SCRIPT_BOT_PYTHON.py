@@ -178,8 +178,10 @@ CONFIG = {
     # - Funding < -0.03% (shorts sobre-apalancados): sesgo LONG, reduce SHORT sizing
     # Funding extremo = cascada de liquidación probable → aprovecharla en la dirección correcta
     "funding_aware_enabled":  _env_bool("JORGE_BOT_FUNDING_AWARE", True),
-    "funding_extreme_long":   0.0005,    # 0.05% — long-heavy
-    "funding_extreme_short":  -0.0003,   # -0.03% — short-heavy
+    # Thresholds calibrados al rango histórico real de BTC (mucho menor que altcoins):
+    # rango observado 2026-03 a 05: min -0.012%, max +0.008%, std 0.0043%
+    "funding_extreme_long":   0.00005,   # 0.005% — long-heavy (percentil ~95 BTC)
+    "funding_extreme_short":  -0.00005,  # -0.005% — short-heavy (percentil ~10 BTC)
     "funding_long_penalty":   0.6,       # multiplicador sizing LONG si funding extremo positivo
     "funding_short_penalty":  0.6,       # multiplicador sizing SHORT si funding extremo negativo
     "funding_long_boost":     1.2,       # boost sizing LONG si funding negativo (shorts cargados)
