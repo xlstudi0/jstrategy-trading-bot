@@ -116,6 +116,13 @@ CONFIG = {
     "timeframe_macro": "1d",
     "timeframe_mid": "4h",
     "timeframe_entry": "1h",
+    # ── Macro bias 1W: filtro de tendencia mayor ─────────────────────────────
+    # Solo opera longs cuando bias 1W es bullish (precio > EMA21W rising)
+    # Solo opera shorts cuando bias 1W es bearish. En 1W neutral: solo trades alta convicción.
+    "timeframe_macro_high":   "1w",
+    "macro_high_enabled":     _env_bool("JORGE_BOT_MACRO_HIGH", True),
+    "macro_high_ema_period":  21,        # EMA21W: estándar de tendencia macro
+    "macro_high_min_candles": 50,        # mínimo de velas semanales para que tenga sentido
 
     # Capital y riesgo — V2 conservadora para buscar consistencia, no hero trades.
     "total_capital_usdt": _env_float("JORGE_BOT_CAPITAL_USDT", 5000),
@@ -1192,6 +1199,58 @@ def check_ema_trend_str(df: pd.DataFrame) -> str:
     return "neutral"
 
 
+# ─── MACRO BIAS 1W ────────────────────────────────────────────────────────────
+
+def compute_macro_high_bias(df_weekly: pd.DataFrame, cfg: dict) -> dict:
+    """Calcula el bias macro semanal: bullish/bearish/neutral basado en EMA21W.
+
+    Returns dict con:
+      - bias: "bullish" | "bearish" | "neutral"
+      - ema_value: float
+      - price: float
+      - distance_pct: % del precio respecto a EMA (positivo = arriba, negativo = abajo)
+      - ema_slope: dirección de la pendiente de EMA21W (+ rising / - falling / 0 flat)
+    """
+    period = int(cfg.get("macro_high_ema_period", 21))
+    min_candles = int(cfg.get("macro_high_min_candles", 50))
+
+    if df_weekly is None or len(df_weekly) < min_candles:
+        return {"bias": "neutral", "reason": "insufficient_data"}
+
+    close = df_weekly["close"]
+    ema = close.ewm(span=period, adjust=False).mean()
+    if pd.isna(ema.iloc[-1]):
+        return {"bias": "neutral", "reason": "ema_nan"}
+
+    price = float(close.iloc[-1])
+    ema_val = float(ema.iloc[-1])
+    distance_pct = (price - ema_val) / ema_val
+
+    # Pendiente: comparar EMA hace 4 velas (1 mes) vs ahora
+    slope_lookback = min(4, len(ema) - 1)
+    ema_prev = float(ema.iloc[-slope_lookback - 1])
+    slope = (ema_val - ema_prev) / ema_prev   # positivo = rising
+
+    # Reglas de bias:
+    # - bullish: precio arriba de EMA + EMA rising (ambas condiciones)
+    # - bearish: precio debajo de EMA + EMA falling
+    # - neutral: cualquier mix
+    if distance_pct > 0 and slope > 0:
+        bias = "bullish"
+    elif distance_pct < 0 and slope < 0:
+        bias = "bearish"
+    else:
+        bias = "neutral"
+
+    return {
+        "bias": bias,
+        "ema_value": ema_val,
+        "price": price,
+        "distance_pct": float(distance_pct),
+        "ema_slope": float(slope),
+    }
+
+
 # ─── STOP DINÁMICO ────────────────────────────────────────────────────────────
 
 def compute_dynamic_stop(df_entry: pd.DataFrame, side: str,
@@ -1244,10 +1303,13 @@ def compute_dynamic_stop(df_entry: pd.DataFrame, side: str,
 # ─── EVALUADOR DE SEÑAL PRINCIPAL ─────────────────────────────────────────────
 
 def evaluate_signal(df_macro: pd.DataFrame, df_mid: pd.DataFrame,
-                    df_entry: pd.DataFrame, cfg: dict) -> dict:
+                    df_entry: pd.DataFrame, cfg: dict,
+                    df_weekly: Optional[pd.DataFrame] = None) -> dict:
     """
     Evalúa los 10 ARGUMENTOS y retorna el análisis completo.
     Score de 0 a 10; cada argumento vale 1 punto.
+
+    df_weekly: opcional, para el bias macro 1W (Fase 1 del upgrade).
     """
     tf_conf   = check_multi_tf_confirmation(df_macro, df_mid, df_entry)
     sr        = check_sr_level(df_mid)
@@ -1444,6 +1506,30 @@ def evaluate_signal(df_macro: pd.DataFrame, df_mid: pd.DataFrame,
     except Exception:
         sig["dynamic_stop_long"]  = None
         sig["dynamic_stop_short"] = None
+
+    # ── Macro bias 1W (Fase 1: filtro direccional macro) ─────────────────────
+    macro_bias_info = {"bias": "neutral", "reason": "disabled"}
+    block_long, block_short = False, False
+    if cfg.get("macro_high_enabled", True) and df_weekly is not None:
+        try:
+            macro_bias_info = compute_macro_high_bias(df_weekly, cfg)
+            bias = macro_bias_info.get("bias", "neutral")
+            # bias bullish → bloquea shorts excepto alta convicción
+            # bias bearish → bloquea longs excepto alta convicción
+            # high_conviction (score >= 9 tipo A) sobrepasa el bloqueo
+            if bias == "bullish" and not (sig.get("high_conviction") and sig.get("entry_type") == "A"):
+                block_short = True
+            elif bias == "bearish":
+                # high conviction long no existe explícitamente, usamos score adj alto
+                if (sig.get("score_adjusted", 0) or 0) < 9:
+                    block_long = True
+        except Exception as e:
+            logger.debug(f"macro_bias error: {e}")
+
+    sig["macro_high_bias"]     = macro_bias_info.get("bias", "neutral")
+    sig["macro_high_info"]     = macro_bias_info
+    sig["block_long_macro"]    = block_long
+    sig["block_short_macro"]   = block_short
     return sig
 
 
@@ -3188,8 +3274,15 @@ def run_bot(cfg: dict = CONFIG):
                     df_macro = get_ohlcv(exchange, sym, cfg["timeframe_macro"])
                     df_mid   = get_ohlcv(exchange, sym, cfg["timeframe_mid"])
                     df_entry = get_ohlcv(exchange, sym, cfg["timeframe_entry"])
+                    # Fase 1: macro bias 1W
+                    df_weekly = None
+                    if cfg.get("macro_high_enabled", True):
+                        try:
+                            df_weekly = get_ohlcv(exchange, sym, cfg.get("timeframe_macro_high", "1w"), limit=100)
+                        except Exception as e:
+                            logger.debug(f"1W fetch error: {e}")
 
-                    sig   = evaluate_signal(df_macro, df_mid, df_entry, sym_cfg)
+                    sig   = evaluate_signal(df_macro, df_mid, df_entry, sym_cfg, df_weekly=df_weekly)
                     price = sig["current_price"]
 
                     # Etiquetar killzone en la signal para los managers
@@ -3237,6 +3330,8 @@ def run_bot(cfg: dict = CONFIG):
 
                         if cfg.get("weekend_filter", True) and now.weekday() >= 5:
                             skip_reason = f"Fin de semana — esperando lunes"
+                        elif sig.get("block_long_macro"):
+                            skip_reason = f"Macro bias 1W bajista (precio<EMA21W) — bloqueando longs no high-conviction"
                         elif sig["entry_type"] not in cfg.get("allowed_entry_types", ["A", "B", "C"]):
                             skip_reason = f"Tipo {sig['entry_type']} fuera de la lista operable"
                         elif cfg.get("require_adx_trend", True) and not sig["adx"]["trend"]:
@@ -3293,6 +3388,8 @@ def run_bot(cfg: dict = CONFIG):
 
                         if cfg.get("weekend_filter", True) and now.weekday() >= 5:
                             skip_reason = "Fin de semana"
+                        elif sig.get("block_short_macro"):
+                            skip_reason = f"Macro bias 1W alcista (precio>EMA21W) — bloqueando shorts no high-conviction"
                         elif sig["smc"]["in_discount_mid"]:
                             skip_reason = "En discount HTF — no abrir shorts"
                         elif kz_sizing < 0.5:
@@ -3701,6 +3798,13 @@ def run_seed_buckets(cfg: dict = CONFIG):
     df_macro = get_ohlcv_history(exchange, cfg["symbol"], cfg["timeframe_macro"], cfg.get("backtest_macro_candles", 600))
     df_mid   = get_ohlcv_history(exchange, cfg["symbol"], cfg["timeframe_mid"],   cfg.get("backtest_mid_candles", 1800))
     df_entry = get_ohlcv_history(exchange, cfg["symbol"], cfg["timeframe_entry"], cfg.get("backtest_entry_candles", 2500))
+    df_weekly = None
+    if bt_cfg.get("macro_high_enabled", True):
+        try:
+            df_weekly = get_ohlcv_history(exchange, cfg["symbol"], bt_cfg.get("timeframe_macro_high", "1w"), 200)
+            print(f"  Velas 1W para macro bias: {len(df_weekly)}")
+        except Exception as e:
+            print(f"  ⚠️  No se pudo cargar 1W para macro bias: {e}")
 
     print(f"  Velas entry: {len(df_entry)} | mid: {len(df_mid)} | macro: {len(df_macro)}")
 
@@ -3732,8 +3836,12 @@ def run_seed_buckets(cfg: dict = CONFIG):
         if len(dm) < 20 or len(dmi) < 20:
             continue
 
+        # Macro bias 1W (Fase 1): cortar df_weekly al timestamp actual del backtest
+        dw = None
+        if df_weekly is not None:
+            dw = df_weekly[df_weekly.index <= ts]
         try:
-            sig = evaluate_signal(dm, dmi, de, bt_cfg)
+            sig = evaluate_signal(dm, dmi, de, bt_cfg, df_weekly=dw)
         except Exception:
             continue
         sig["killzone"] = kz["name"] if kz else "OFF"
@@ -3765,8 +3873,10 @@ def run_seed_buckets(cfg: dict = CONFIG):
         if not can_open:
             continue
 
-        # LONG
-        if sig["can_long"] and sig["entry_type"] in cfg.get("allowed_entry_types", ["A", "B", "C"]):
+        # LONG (con filtro macro bias)
+        if (sig["can_long"]
+                and sig["entry_type"] in cfg.get("allowed_entry_types", ["A", "B", "C"])
+                and not sig.get("block_long_macro", False)):
             sig["_adapt_mult"]   = 1.0     # backtest no aplica adaptativo a sí mismo
             sig["_final_sizing"] = kz_sizing
             try:
@@ -3774,8 +3884,9 @@ def run_seed_buckets(cfg: dict = CONFIG):
                     n_long += 1
             except Exception:
                 pass
-        # SHORT
-        elif sig.get("can_short_standalone") and bt_cfg.get("shorts_enabled", True):
+        # SHORT (con filtro macro bias)
+        elif (sig.get("can_short_standalone") and bt_cfg.get("shorts_enabled", True)
+                and not sig.get("block_short_macro", False)):
             try:
                 if manager.open_short_standalone(price, sig, sizing_mult=kz_sizing):
                     n_short += 1
