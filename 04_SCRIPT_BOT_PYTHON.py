@@ -1664,19 +1664,26 @@ class PaperPositionManager:
             or (stop_price is None and pnl <= self.cfg.get("hard_stop_pct", -0.06))
         ):
             close_size = self.active_long["size"]
-            recovered = close_size * entry / self.cfg["leverage"] + close_size * (current_price - entry)
+            # Separar margen prorrateado de ganancia/pérdida real para journal correcto
+            margin_part = close_size * entry / self.cfg["leverage"]
+            real_pnl    = close_size * (current_price - entry)
+            recovered   = margin_part + real_pnl
             self.balance += max(recovered, 0)
+            # Diferenciar lock_exit (post-TP3 con ganancia) de hard_stop real (pérdida)
+            event_name = "hard_stop" if real_pnl < 0 else "lock_exit"
             msg = (f"{self._paper_tag} ❌ HARD STOP | {self.symbol}\n"
                    f"Precio: {current_price:.2f} | PnL: {pnl*100:.1f}%\n"
-                   f"Salida defensiva activada para proteger capital.")
+                   f"Salida defensiva activada para proteger capital.") if real_pnl < 0 else (
+                   f"{self._paper_tag} 🔒 LOCK EXIT | {self.symbol}\n"
+                   f"Precio: {current_price:.2f} | Stop runner activado | Ganancia: +{real_pnl:.2f}")
             logger.info(msg)
             _append_trade_journal({
-                "event": "hard_stop",
+                "event": event_name,
                 "side": "long",
                 "price": current_price,
                 "size": close_size,
                 "pnl_pct": round(pnl * 100, 2),
-                "pnl_usdt": round(max(recovered, 0) - self.active_long["cost"], 2),
+                "pnl_usdt": round(real_pnl, 2),
                 "balance": round(self.balance, 2),
             }, self.cfg, sig=sig, pos=self.active_long)
             _save_trade_metrics_snapshot(self.cfg)
@@ -2003,16 +2010,22 @@ class PaperPositionManager:
             or (stop_price is None and gain <= self.cfg.get("hard_stop_pct", -0.06))
         ):
             close_size = pos["size"]
-            recovered = close_size * entry / lev + close_size * (entry - current_price)
+            margin_part = close_size * entry / lev
+            real_pnl    = close_size * (entry - current_price)
+            recovered   = margin_part + real_pnl
             self.balance += max(recovered, 0)
+            # Diferenciar: es "lock profit exit" (post-TP3) si real_pnl >= 0, sino hard stop real
+            event_name = "hard_stop_short" if real_pnl < 0 else "lock_exit_short"
             msg = (f"{self._paper_tag} ❌ HARD STOP SHORT | {self.symbol}\n"
-                   f"Precio: {current_price:.2f} | Pérdida: {gain*100:.1f}%")
+                   f"Precio: {current_price:.2f} | Pérdida: {gain*100:.1f}%") if real_pnl < 0 else (
+                   f"{self._paper_tag} 🔒 LOCK EXIT SHORT | {self.symbol}\n"
+                   f"Precio: {current_price:.2f} | Stop runner activado | Ganancia: +{real_pnl:.2f}")
             logger.info(msg)
             _append_trade_journal({
-                "event": "hard_stop_short", "side": "short",
+                "event": event_name, "side": "short",
                 "price": current_price, "size": close_size,
                 "pnl_pct": round(gain * 100, 2),
-                "pnl_usdt": round(max(recovered, 0) - pos["cost"], 2),
+                "pnl_usdt": round(real_pnl, 2),
                 "balance": round(self.balance, 2),
             }, self.cfg, sig=sig, pos=pos)
             _save_trade_metrics_snapshot(self.cfg)
