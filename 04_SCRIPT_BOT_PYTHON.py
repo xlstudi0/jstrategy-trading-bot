@@ -124,10 +124,18 @@ CONFIG = {
     "position_parts": 5,         # 1 entrada inicial + 4 DCA moderados
 
     # Take profit V2: más realista para intradía/swing corto y para un objetivo diario de 10-20 USDT.
-    "tp1_pct": 0.01,             # +1.0% precio → asegurar caja
-    "tp2_pct": 0.02,             # +2.0% precio → descargar otra parte
-    "tp3_pct": 0.035,            # +3.5% precio → realizar la mayor parte
-    "tp_hold_pct": 0.10,         # 10% restante opcional para extender
+    # ── TPs y runner: filosofía "small constant + big when extends" ─────────
+    # TP1 agresivo cierra más temprano y más cantidad → asegura caja rápido.
+    # Runner (15%) post-TP3 captura movimientos extendidos sin cap superior.
+    # Stop progresa: entry → breakeven (post-TP2) → TP2 price (post-TP3) → ATR trail (runner).
+    "tp1_pct": 0.008,            # +0.8% precio (antes 1.0%) → caja rápida
+    "tp1_close_pct": 0.30,       # 30% de la posición (antes 20%)
+    "tp2_pct": 0.016,            # +1.6% precio (antes 2.0%)
+    "tp2_close_pct": 0.30,       # 30% (antes 20%)
+    "tp3_pct": 0.028,            # +2.8% precio (antes 3.5%)
+    "tp3_close_pct": 0.25,       # 25% (antes 30%) → deja 15% como runner
+    "tp_hold_pct": 0.15,         # 15% restante = runner sin TP fijo, trail ATR
+    "runner_trail_atr_mult": 2.0,  # buffer ATR para el trail del runner
 
     # DCA V2: escalado moderado. Se evita el martingale agresivo.
     "dca_levels_pct": [-0.015, -0.03, -0.045, -0.06],
@@ -1715,9 +1723,9 @@ class PaperPositionManager:
         # = close_size × entry/leverage + close_size × (current_price - entry)
         lev = self.cfg["leverage"]
         tp_levels = [
-            (self.cfg["tp1_pct"], 0.20),
-            (self.cfg["tp2_pct"], 0.20),
-            (self.cfg["tp3_pct"], 0.30),
+            (self.cfg["tp1_pct"], self.cfg.get("tp1_close_pct", 0.30)),
+            (self.cfg["tp2_pct"], self.cfg.get("tp2_close_pct", 0.30)),
+            (self.cfg["tp3_pct"], self.cfg.get("tp3_close_pct", 0.25)),
         ]
         for i, (tp_pct, close_pct) in enumerate(tp_levels):
             if pnl >= tp_pct and i not in self.active_long["tp_done"]:
@@ -1729,6 +1737,16 @@ class PaperPositionManager:
                 self.active_long["size"] -= close_size
                 self.active_long["tp_done"].append(i)
                 self.tp_count += 1
+
+                # Stop progression: TP2 → breakeven, TP3 → TP2 price (lock profit del runner)
+                if i == 1:   # TP2
+                    self.active_long["stop_price"] = float(entry)
+                    logger.info(f"{self._paper_tag} 🔒 Stop movido a breakeven ({entry:.2f}) post-TP2")
+                elif i == 2:  # TP3
+                    tp2_price = float(entry * (1 + self.cfg["tp2_pct"]))
+                    self.active_long["stop_price"] = tp2_price
+                    logger.info(f"{self._paper_tag} 🔒 Stop movido a TP2 ({tp2_price:.2f}) post-TP3 — runner activo")
+
                 margin_ret_pct = round(pnl * lev * 100, 1)
                 msg = (f"{self._paper_tag} 💰 TP{i+1} | {self.symbol}\n"
                        f"Precio: {current_price:.2f} | +{pnl*100:.1f}% precio (+{margin_ret_pct}%/margen)\n"
@@ -1748,15 +1766,37 @@ class PaperPositionManager:
                 self.trade_log.append({"event": f"tp{i+1}", "price": current_price,
                                         "pnl_pct": round(pnl*100, 2), "gain_usdt": round(real_pnl, 2)})
 
-        # ── Trailing stop post-TP1: proteger si el mercado se invirtió
-        # Trigger: TP1 alcanzado + precio cayó bajo entrada + ADX ya no alcista
-        if (self.active_long                                              # posición sigue abierta
+        # ── Runner post-TP3: trail dinámico ATR — solo sube, nunca baja
+        if (self.active_long and 2 in self.active_long.get("tp_done", [])
+                and df_entry is not None and len(df_entry) >= 14):
+            tr_mult = float(self.cfg.get("runner_trail_atr_mult", 2.0))
+            recent_h = df_entry["high"].tail(14)
+            recent_l = df_entry["low"].tail(14)
+            atr = float((recent_h - recent_l).mean())
+            trail_candidate = float(current_price - atr * tr_mult)
+            current_stop = float(self.active_long.get("stop_price") or 0)
+            if trail_candidate > current_stop:
+                self.active_long["stop_price"] = trail_candidate
+
+        # ── Trail post-TP1 (NUEVA lógica): si squeeze cambia, MUEVE stop a entry (no cierra)
+        # Esto evita cortar ganadores prematuramente — el stop dinámico hace el resto.
+        if (self.active_long
                 and self.cfg.get("trailing_stop_after_tp1", True)
-                and 0 in self.active_long.get("tp_done", [])             # TP1 fue alcanzado
-                and pnl < self.cfg.get("trailing_stop_entry_pct", -0.015)  # -1.5% bajo entrada
-                and not bool(df_mid.iloc[-1]["adx_bull"])):              # tendencia debilitada
+                and 0 in self.active_long.get("tp_done", [])
+                and 1 not in self.active_long.get("tp_done", [])       # aún no TP2
+                and not bool(df_mid.iloc[-1]["adx_bull"])
+                and float(self.active_long.get("stop_price") or 0) < entry):
+            self.active_long["stop_price"] = float(entry)
+            logger.info(f"{self._paper_tag} 🔒 Trail post-TP1: stop movido a entry ({entry:.2f}) — ADX debilitado")
+
+        # ── Trailing stop legacy (fallback): solo si dynamic_stop_enabled=False
+        if (not self.cfg.get("dynamic_stop_enabled", True)
+                and self.active_long
+                and self.cfg.get("trailing_stop_after_tp1", True)
+                and 0 in self.active_long.get("tp_done", [])
+                and pnl < self.cfg.get("trailing_stop_entry_pct", -0.015)
+                and not bool(df_mid.iloc[-1]["adx_bull"])):
             close_size = self.active_long["size"]
-            # Devolver margen + PnL (puede ser negativo — solo recuperamos lo que queda)
             recovered = close_size * entry / lev + close_size * (current_price - entry)
             self.balance += max(recovered, 0)
             msg = (f"{self._paper_tag} 🛑 TRAILING STOP POST-TP1 | {self.symbol}\n"
@@ -2012,9 +2052,9 @@ class PaperPositionManager:
 
         # TPs parciales — precio bajó a favor del short
         tp_levels = [
-            (self.cfg["tp1_pct"], 0.20),
-            (self.cfg["tp2_pct"], 0.20),
-            (self.cfg["tp3_pct"], 0.30),
+            (self.cfg["tp1_pct"], self.cfg.get("tp1_close_pct", 0.30)),
+            (self.cfg["tp2_pct"], self.cfg.get("tp2_close_pct", 0.30)),
+            (self.cfg["tp3_pct"], self.cfg.get("tp3_close_pct", 0.25)),
         ]
         for i, (tp_pct, close_pct) in enumerate(tp_levels):
             if gain >= tp_pct and i not in pos["tp_done"]:
@@ -2026,6 +2066,16 @@ class PaperPositionManager:
                 pos["size"] -= close_size
                 pos["tp_done"].append(i)
                 self.tp_count += 1
+
+                # Stop progression: TP2 → breakeven, TP3 → TP2 price (lock profit del runner)
+                if i == 1:   # TP2
+                    pos["stop_price"] = float(entry)
+                    logger.info(f"{self._paper_tag} 🔒 Stop SHORT movido a breakeven ({entry:.2f}) post-TP2")
+                elif i == 2:  # TP3
+                    tp2_price = float(entry * (1 - self.cfg["tp2_pct"]))   # short: stop ARRIBA del entry, pero lock = precio TP2 (debajo entry)
+                    pos["stop_price"] = tp2_price
+                    logger.info(f"{self._paper_tag} 🔒 Stop SHORT movido a TP2 ({tp2_price:.2f}) post-TP3 — runner activo")
+
                 msg = (f"{self._paper_tag} 💰 TP{i+1} SHORT | {self.symbol}\n"
                        f"Precio: {current_price:.2f} | +{gain*100:.1f}% (favorable)\n"
                        f"Cerrado: {int(close_pct*100)}% | Ganancia: +{real_pnl:.2f} USDT")
@@ -2040,9 +2090,23 @@ class PaperPositionManager:
                 _save_trade_metrics_snapshot(self.cfg)
                 send_telegram(msg, self.cfg)
 
-        # Trailing post-TP1: si squeeze alcista emerge, cerrar resto
+        # Runner post-TP3 SHORT: trail ATR — solo BAJA, nunca sube (short)
+        # Para short el stop está ARRIBA del precio. Si current baja, podemos bajar el stop.
+        # Pero por el lock-in post-TP3, el stop NUNCA debe subir más allá del entry.
+        # Implementación: si el lock TP2 ya está activo, calcular trail dinámico hacia abajo.
+        # Nota: para shorts el "trail dinámico" es delicado — preferimos el lock fijo en TP2 price.
+        # (Decisión: en short el runner queda con stop = TP2 price fijo, sin ATR trail adicional)
+
+        # Trail post-TP1 SHORT (NUEVA lógica): si squeeze alcista emerge, MUEVE stop a entry (no cierra)
         sqz_bullish = bool(df_mid.iloc[-1].get("sqz_fire_bull", False))
-        if (pos and 0 in pos.get("tp_done", []) and sqz_bullish):
+        if (pos and 0 in pos.get("tp_done", []) and 1 not in pos.get("tp_done", [])
+                and sqz_bullish and float(pos.get("stop_price") or float("inf")) > entry):
+            pos["stop_price"] = float(entry)
+            logger.info(f"{self._paper_tag} 🔒 Trail SHORT post-TP1: stop movido a entry ({entry:.2f}) — squeeze alcista")
+
+        # Trail legacy (fallback): solo si dynamic_stop_enabled=False
+        if (not self.cfg.get("dynamic_stop_enabled", True)
+                and pos and 0 in pos.get("tp_done", []) and sqz_bullish):
             close_size = pos["size"]
             if close_size > 0:
                 final = close_size * entry / lev + close_size * (entry - current_price)
