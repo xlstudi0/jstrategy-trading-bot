@@ -159,16 +159,18 @@ CONFIG = {
     # - exhaustion: vol alta sin tendencia → reducir sizing, solo trades A
     # - quiet:     vol baja sin tendencia → NO operar
     "regime_aware_enabled": _env_bool("JORGE_BOT_REGIME_AWARE", True),
-    # TPs por régimen — alineados a Jorge (swing) pero modulados por contexto:
-    # - expansion (vol alta + trend): TPs MÁS amplios, deja correr al máximo
-    # - trending: TPs Jorge estándar
-    # - ranging: TPs ajustados (mean reversion, no swing) — Jorge no opera mucho rangos
-    # - exhaustion: solo trades A con TPs amplios, sizing reducido
+    # ── HÍBRIDO INTELIGENTE: swing Jorge en trending, scalp en ranging ──────
+    # Razón: Jorge swing requiere movimientos sostenidos 5-22%. En ranging eso
+    # NO pasa → TPs amplios no se ejecutan → pérdidas por stop. Solución:
+    # - trending/expansion: TPs Jorge amplios (5/12/22%) capturan big moves
+    # - ranging/exhaustion: TPs scalp (0.8/1.6/2.8%) ganancias pequeñas frecuentes
+    # El detector de ruptura estructural sigue activo: sobreescribe con TPs especiales
     "regime_tps": {
         "expansion":  {"tp1_pct": 0.060, "tp1_close": 0.15, "tp2_pct": 0.140, "tp2_close": 0.20, "tp3_pct": 0.250, "tp3_close": 0.30, "runner": 0.35, "trail_atr": 3.5},
         "trending":   {"tp1_pct": 0.050, "tp1_close": 0.20, "tp2_pct": 0.120, "tp2_close": 0.20, "tp3_pct": 0.220, "tp3_close": 0.30, "runner": 0.30, "trail_atr": 3.0},
-        "ranging":    {"tp1_pct": 0.020, "tp1_close": 0.30, "tp2_pct": 0.040, "tp2_close": 0.30, "tp3_pct": 0.070, "tp3_close": 0.30, "runner": 0.10, "trail_atr": 2.0},
-        "exhaustion": {"tp1_pct": 0.030, "tp1_close": 0.40, "tp2_pct": 0.060, "tp2_close": 0.30, "tp3_pct": 0.100, "tp3_close": 0.25, "runner": 0.05, "trail_atr": 2.0},
+        # ranging y exhaustion: vuelta a SCALP calibration que ya validó (v6)
+        "ranging":    {"tp1_pct": 0.008, "tp1_close": 0.30, "tp2_pct": 0.016, "tp2_close": 0.30, "tp3_pct": 0.028, "tp3_close": 0.25, "runner": 0.15, "trail_atr": 2.0},
+        "exhaustion": {"tp1_pct": 0.008, "tp1_close": 0.40, "tp2_pct": 0.014, "tp2_close": 0.35, "tp3_pct": 0.022, "tp3_close": 0.20, "runner": 0.05, "trail_atr": 1.5},
     },
     "regime_sizing": {
         "expansion":  1.00,
@@ -1506,12 +1508,16 @@ def compute_macro_high_bias(df_weekly: pd.DataFrame, cfg: dict) -> dict:
 # ─── STOP DINÁMICO ────────────────────────────────────────────────────────────
 
 def compute_dynamic_stop(df_entry: pd.DataFrame, side: str,
-                         entry_price: float, cfg: dict) -> float:
+                         entry_price: float, cfg: dict,
+                         tp1_pct: Optional[float] = None) -> float:
     """Calcula stop dinámico: swing low/high reciente + buffer ATR, clamped por max/min %.
 
     Long: stop = min(swing_low - ATR×k, entry × (1 - max_pct))
           luego min en absoluto a entry × (1 - min_pct) para no ser demasiado ajustado.
     Short: análogo invertido (swing high + buffer arriba).
+
+    Si tp1_pct se provee, max_pct se ajusta a max(tp1_pct × 2.5, min_pct × 2)
+    para garantizar R/R mínimo razonable (no arriesgar 12% para ganar 0.8%).
 
     Retorna precio absoluto del stop. Si los datos son insuficientes, fallback a
     entry × (1 ∓ hard_stop_pct) — comportamiento legacy.
@@ -1522,6 +1528,13 @@ def compute_dynamic_stop(df_entry: pd.DataFrame, side: str,
     max_pct = float(cfg.get("dynamic_stop_max_pct", 0.06))
     min_pct = float(cfg.get("dynamic_stop_min_pct", 0.015))
     fallback_pct = abs(float(cfg.get("hard_stop_pct", -0.06)))
+
+    # Si tenemos TP1 del régimen actual, ajustar max_pct para mantener R/R razonable
+    if tp1_pct is not None and tp1_pct > 0:
+        rr_max = float(tp1_pct) * 2.5     # arriesgar máximo 2.5x el TP1
+        max_pct = min(max_pct, rr_max)
+        # Pero no bajar de min_pct × 1.5 para no ahogar el trade
+        max_pct = max(max_pct, min_pct * 1.5)
 
     if df_entry is None or len(df_entry) < max(lookback, atr_period) + 1:
         return entry_price * (1 - fallback_pct) if side == "long" else entry_price * (1 + fallback_pct)
@@ -1753,12 +1766,18 @@ def evaluate_signal(df_macro: pd.DataFrame, df_mid: pd.DataFrame,
     }
 
     # Stop dinámico precomputado para ambos lados (se decide cuál usar al abrir).
-    # En paper, calculamos sobre el precio actual como hipotético entry; en real,
-    # el slippage al market order es despreciable a estos timeframes.
+    # Ajusta max_pct al TP1 del régimen para mantener R/R razonable.
     _cp = float(df_entry.iloc[-1]["close"])
+    # Régimen actual del mid TF
     try:
-        sig["dynamic_stop_long"]  = compute_dynamic_stop(df_entry, "long",  _cp, cfg)
-        sig["dynamic_stop_short"] = compute_dynamic_stop(df_entry, "short", _cp, cfg)
+        _regime_now = str(mid_last.get("regime", "warmup"))
+    except Exception:
+        _regime_now = "warmup"
+    _regime_tps = cfg.get("regime_tps", {}).get(_regime_now) if cfg.get("regime_aware_enabled", True) else None
+    _tp1 = _regime_tps.get("tp1_pct") if _regime_tps else cfg.get("tp1_pct", 0.05)
+    try:
+        sig["dynamic_stop_long"]  = compute_dynamic_stop(df_entry, "long",  _cp, cfg, tp1_pct=_tp1)
+        sig["dynamic_stop_short"] = compute_dynamic_stop(df_entry, "short", _cp, cfg, tp1_pct=_tp1)
     except Exception:
         sig["dynamic_stop_long"]  = None
         sig["dynamic_stop_short"] = None
