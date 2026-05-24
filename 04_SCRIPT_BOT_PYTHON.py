@@ -291,9 +291,16 @@ CONFIG = {
     "trailing_stop_after_tp1": True,
     "trailing_stop_entry_pct": -0.0025,   # proteger rápidamente cuando el trade ya pagó
 
-    # Empezar simple. Primero validar BTC; después expandir.
-    "symbols": _env_list("JORGE_BOT_SYMBOLS", ["BTC/USDT:USDT"]),
-    "max_concurrent_positions": _env_int("JORGE_BOT_MAX_POSITIONS", 1),
+    # Multi-symbol: BTC + ETH + SOL + AVAX (top 4 majors líquidas en perpetuos)
+    # Cada symbol se evalúa independientemente: régimen, funding, OB, scores.
+    # max_concurrent=2 permite diversificar SIN concentrar todo en cripto correlada
+    "symbols": _env_list("JORGE_BOT_SYMBOLS", [
+        "BTC/USDT:USDT",
+        "ETH/USDT:USDT",
+        "SOL/USDT:USDT",
+        "AVAX/USDT:USDT",
+    ]),
+    "max_concurrent_positions": _env_int("JORGE_BOT_MAX_POSITIONS", 2),
 
     # Tolerancia de soporte estructural para DCA
     "dca_structural_tolerance": 0.015,   # ±1.5% de distancia al soporte
