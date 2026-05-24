@@ -1757,19 +1757,11 @@ def evaluate_signal(df_macro: pd.DataFrame, df_mid: pd.DataFrame,
         "atr_pct":    float(mid_last.get("atr_pct", 0.5) or 0.5),
     }
 
-    # Stop dinámico precomputado para ambos lados (se decide cuál usar al abrir).
-    # Ajusta max_pct al TP1 del régimen para mantener R/R razonable.
+    # Stop dinámico precomputado v7 (sin ajuste R/R que rompe el calibration)
     _cp = float(df_entry.iloc[-1]["close"])
-    # Régimen actual del mid TF
     try:
-        _regime_now = str(mid_last.get("regime", "warmup"))
-    except Exception:
-        _regime_now = "warmup"
-    _regime_tps = cfg.get("regime_tps", {}).get(_regime_now) if cfg.get("regime_aware_enabled", True) else None
-    _tp1 = _regime_tps.get("tp1_pct") if _regime_tps else cfg.get("tp1_pct", 0.05)
-    try:
-        sig["dynamic_stop_long"]  = compute_dynamic_stop(df_entry, "long",  _cp, cfg, tp1_pct=_tp1)
-        sig["dynamic_stop_short"] = compute_dynamic_stop(df_entry, "short", _cp, cfg, tp1_pct=_tp1)
+        sig["dynamic_stop_long"]  = compute_dynamic_stop(df_entry, "long",  _cp, cfg)
+        sig["dynamic_stop_short"] = compute_dynamic_stop(df_entry, "short", _cp, cfg)
     except Exception:
         sig["dynamic_stop_long"]  = None
         sig["dynamic_stop_short"] = None
