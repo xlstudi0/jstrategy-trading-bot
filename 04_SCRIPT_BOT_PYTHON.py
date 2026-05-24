@@ -205,7 +205,9 @@ CONFIG = {
     # ── RUPTURA ESTRUCTURAL — operación excepcional Jorge ────────────────────
     # Cuando se detecta ruptura confirmada: entrar con 80% del capital (4× el normal)
     # TPs cortos: salir 90% en +30-50% de ganancia (operación rápida, no swing)
-    "structural_break_enabled":  _env_bool("JORGE_BOT_STRUCTURAL_BREAK", True),
+    # Backtest mostró falsos positivos (-85 USDT en 1 trade con sizing ×4).
+    # Necesita más calibración antes de activar. Infraestructura queda lista.
+    "structural_break_enabled":  _env_bool("JORGE_BOT_STRUCTURAL_BREAK", False),
     "structural_break_sizing":   4.0,    # 4× el sizing normal (20% × 4 = 80% capital)
     "structural_break_tps": {            # TPs específicos para rupturas (cierre rápido)
         "tp1_pct": 0.10,  "tp1_close": 0.30,    # +10% precio → cerrar 30%
