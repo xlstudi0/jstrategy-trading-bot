@@ -126,10 +126,12 @@ CONFIG = {
     "macro_high_ema_period":  21,        # EMA21W: estándar de tendencia macro
     "macro_high_min_candles": 50,        # mínimo de velas semanales para que tenga sentido
 
-    # Capital y riesgo — V2 conservadora para buscar consistencia, no hero trades.
+    # Capital y riesgo — V7 AGRESIVO: prioriza rentabilidad sobre preservación absoluta.
+    # Cambios vs v6: risk 10→20%, leverage 3→5. Stops también más ajustados abajo.
+    # Backtest debe confirmar que drawdown no excede ~15%.
     "total_capital_usdt": _env_float("JORGE_BOT_CAPITAL_USDT", 5000),
-    "risk_capital_pct": _env_float("JORGE_BOT_RISK_CAPITAL_PCT", 0.10),   # 10% de la cuenta como capital activo por idea
-    "leverage": _env_int("JORGE_BOT_LEVERAGE", 3),
+    "risk_capital_pct": _env_float("JORGE_BOT_RISK_CAPITAL_PCT", 0.20),   # 20% por idea (antes 10%)
+    "leverage": _env_int("JORGE_BOT_LEVERAGE", 5),                        # 5× (antes 3×)
     "position_parts": 5,         # 1 entrada inicial + 4 DCA moderados
 
     # Take profit V2: más realista para intradía/swing corto y para un objetivo diario de 10-20 USDT.
@@ -217,18 +219,20 @@ CONFIG = {
 
     # Invalidación dura V2. Si el setup no responde, se sale.
     "enable_hard_stop": True,
-    "hard_stop_pct": -0.06,           # fallback estático (usado si dynamic_stop_enabled=False o fail)
+    # Con leverage 5×, -6% precio = -30% margen (cerca de liquidación). Bajamos a -3%.
+    "hard_stop_pct": -0.03,           # fallback estático (usado si dynamic_stop_enabled=False o fail)
 
     # ── STOP DINÁMICO ─────────────────────────────────────────────────────────
     # Calcula el stop sobre el swing low/high reciente + buffer ATR. Respeta la
     # estructura real del precio en vez de un % fijo ciego al contexto.
     # Clamped entre min_pct y max_pct para evitar stops absurdos.
+    # Recalibrado para leverage 5×: max 4% precio = -20% margen (tolerable, no liquida)
     "dynamic_stop_enabled":      _env_bool("JORGE_BOT_DYNAMIC_STOP", True),
     "dynamic_stop_lookback":     10,      # velas para buscar swing low/high
     "dynamic_stop_atr_mult":     1.0,     # cuánto buffer ATR debajo/encima del swing
     "dynamic_stop_atr_period":   14,      # cálculo del ATR (true range medio)
-    "dynamic_stop_max_pct":      0.06,    # tope max (≡ al hard_stop_pct legacy)
-    "dynamic_stop_min_pct":      0.015,   # tope min: stop no más ajustado que 1.5%
+    "dynamic_stop_max_pct":      0.04,    # tope max (4% precio = -20% margen con lev 5)
+    "dynamic_stop_min_pct":      0.012,   # tope min: stop no más ajustado que 1.2%
 
     # Señales — automatización más estricta
     "min_score_to_enter": 8,
@@ -1898,7 +1902,15 @@ class PaperPositionManager:
         return equity
 
     def _order_size(self, price: float) -> float:
-        risk = self.cfg["total_capital_usdt"] * self.cfg["risk_capital_pct"]
+        # COMPOUND: usa equity actual (balance líquido + margen + unrealized) en vez del
+        # capital inicial estático. Esto hace que las ganancias se compongan: cuando el
+        # balance crece, el tamaño de la próxima posición también crece proporcionalmente.
+        # En racha negativa, el sizing baja → reduce drawdown peak natural.
+        try:
+            capital = self.get_equity()
+        except Exception:
+            capital = self.balance
+        risk = capital * self.cfg["risk_capital_pct"]
         part = risk / self.cfg["position_parts"]
         return round((part * self.cfg["leverage"]) / price, 6)
 
@@ -2809,7 +2821,16 @@ class PositionManager:
             return 0.0
 
     def _order_size(self, price: float) -> float:
-        risk = self.cfg["total_capital_usdt"] * self.cfg["risk_capital_pct"]
+        # COMPOUND: usa balance actual del exchange (que ya incluye unrealized via wallet total)
+        # en vez del capital inicial estático. Cuando el balance crece, el sizing crece.
+        try:
+            wallet = self.ex.fetch_balance()
+            capital = float(wallet["USDT"]["total"])   # total = libre + comprometido + unrealized
+            if capital <= 0:
+                capital = float(self.cfg["total_capital_usdt"])
+        except Exception:
+            capital = float(self.cfg["total_capital_usdt"])
+        risk = capital * self.cfg["risk_capital_pct"]
         part = risk / self.cfg["position_parts"]
         return round((part * self.cfg["leverage"]) / price, 4)
 
