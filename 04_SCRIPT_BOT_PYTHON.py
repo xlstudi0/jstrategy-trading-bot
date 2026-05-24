@@ -126,30 +126,27 @@ CONFIG = {
     "macro_high_ema_period":  21,        # EMA21W: estándar de tendencia macro
     "macro_high_min_candles": 50,        # mínimo de velas semanales para que tenga sentido
 
-    # Capital y riesgo — V8 ALINEADO A JORGE 100%:
-    # - 20% capital activo, dividido en 5 partes de 20% c/u del activo
-    # - Leverage 3× (no 5×: necesita buffer para DCAs hasta -20%)
-    # - TPs amplios: 5/12/22% (swing trading, no scalping)
-    # - Detector de ruptura estructural → entrada excepcional 80% capital
+    # Capital y riesgo — V10 = V7 (mejor backtest) + detector ruptura activo:
+    # - v7 scalp agresivo: +86 USDT/104d, WR 80%, drawdown -4.85% (mejor real)
+    # - Detector de ruptura: cuando aparezca trend, entra con 80% capital
+    # - Compound activo: equity actual modula sizing
     "total_capital_usdt": _env_float("JORGE_BOT_CAPITAL_USDT", 5000),
     "risk_capital_pct": _env_float("JORGE_BOT_RISK_CAPITAL_PCT", 0.20),   # 20% capital activo
-    "leverage": _env_int("JORGE_BOT_LEVERAGE", 3),                        # 3× — buffer para DCAs amplios
+    "leverage": _env_int("JORGE_BOT_LEVERAGE", 5),                        # 5× (mayor amplificación)
     "position_parts": 5,         # 1 entrada inicial + 4 DCA
 
     # Take profit V2: más realista para intradía/swing corto y para un objetivo diario de 10-20 USDT.
-    # ── TPs y runner — JORGE 100% (swing trading) ────────────────────────────
-    # Cita: "La descargo cuando esté en positivo >100% del margen. Resto con TP 1000%"
-    # Con leverage 3×: 100% retorno/margen = ~33% movimiento de precio
-    # Pero Jorge usa 5×, donde 100% margen = 20% precio. Aquí 3× para más buffer DCA.
-    # TPs en % PRECIO:
-    "tp1_pct": 0.05,             # +5% precio (15% margen retorno con lev 3) → asegurar caja
-    "tp1_close_pct": 0.20,       # 20%
-    "tp2_pct": 0.12,             # +12% (36% margen) → descargar otra parte
-    "tp2_close_pct": 0.20,       # 20%
-    "tp3_pct": 0.22,             # +22% (66% margen) → realizar mayor parte
-    "tp3_close_pct": 0.30,       # 30%
-    "tp_hold_pct": 0.30,         # 30% RUNNER indefinido — "resto con TP 1000%"
-    "runner_trail_atr_mult": 3.0,  # buffer ATR amplio para runner (no cortar prematuro)
+    # ── TPs y runner — V7 SCALP AGRESIVO (validado +86 USDT/104d) ────────────
+    # Calibración que SÍ funciona en mercados reales (mostly lateral).
+    # Si aparece ruptura estructural → TPs especiales sobrescriben (90% en +35%).
+    "tp1_pct": 0.008,            # +0.8% precio → caja rápida
+    "tp1_close_pct": 0.30,       # 30%
+    "tp2_pct": 0.016,            # +1.6%
+    "tp2_close_pct": 0.30,       # 30%
+    "tp3_pct": 0.028,            # +2.8%
+    "tp3_close_pct": 0.25,       # 25% → deja 15% runner
+    "tp_hold_pct": 0.15,         # 15% runner ATR
+    "runner_trail_atr_mult": 2.0,
 
     # ── FASE 2: Régimen-aware execution ──────────────────────────────────────
     # El bot cambia TPs, sizing y filtros según el régimen detectado:
@@ -222,9 +219,9 @@ CONFIG = {
     },
 
     # DCA V2: escalado moderado. Se evita el martingale agresivo.
-    # DCAs según Jorge: niveles amplios, tamaño igual (20% cada uno del capital activo)
-    "dca_levels_pct": [-0.03, -0.07, -0.12, -0.20],
-    "dca_size_multipliers": [1.00, 1.00, 1.00, 1.00],
+    # DCAs cortos (v7 calibration validada) — DCAs amplios solo en ruptura estructural
+    "dca_levels_pct": [-0.015, -0.03, -0.045, -0.06],
+    "dca_size_multipliers": [0.50, 0.75, 1.00, 1.25],
 
     # Umbrales de análisis
     "compression_threshold_pct": 0.02,
@@ -242,20 +239,15 @@ CONFIG = {
 
     # Invalidación dura V2. Si el setup no responde, se sale.
     "enable_hard_stop": True,
-    # Alineado a Jorge: deja que DCAs lleguen hasta -20% precio. Pero -20% × lev 3 = -60% margen
-    # que es agresivo. Hard stop a -25% precio (= -75% margen, justo antes de liquidación lev 3 33%)
-    # protege contra catástrofes pero permite DCAs amplios. Dinámico debería activar antes.
-    "hard_stop_pct": -0.25,
-    # ── STOP DINÁMICO ─────────────────────────────────────────────────────────
-    # Con TPs amplios (Jorge), el stop también debe ser amplio para no cortar setups que
-    # llegan a tomar 22% precio. Stop max 12% precio (= 36% margen lev 3) — agresivo pero
-    # consistente con la asimetría que Jorge busca: arriesgar 12% para ganar 22%.
+    # Hard stop v7 (con lev 5×): -3% precio = -15% margen, controlado
+    "hard_stop_pct": -0.03,
+    # Stop dinámico v7: max 4% precio (= -20% margen lev 5), min 1.2%
     "dynamic_stop_enabled":      _env_bool("JORGE_BOT_DYNAMIC_STOP", True),
-    "dynamic_stop_lookback":     20,      # velas para buscar swing low/high (más amplio: swing structure)
-    "dynamic_stop_atr_mult":     1.5,     # buffer ATR mayor — protege de wicks
+    "dynamic_stop_lookback":     10,
+    "dynamic_stop_atr_mult":     1.0,
     "dynamic_stop_atr_period":   14,
-    "dynamic_stop_max_pct":      0.12,    # tope max: 12% (= 36% margen lev 3)
-    "dynamic_stop_min_pct":      0.03,    # tope min: 3% precio
+    "dynamic_stop_max_pct":      0.04,
+    "dynamic_stop_min_pct":      0.012,
 
     # Señales — automatización más estricta
     "min_score_to_enter": 8,
