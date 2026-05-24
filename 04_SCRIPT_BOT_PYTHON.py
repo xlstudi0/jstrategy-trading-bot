@@ -156,16 +156,13 @@ CONFIG = {
     # - exhaustion: vol alta sin tendencia → reducir sizing, solo trades A
     # - quiet:     vol baja sin tendencia → NO operar
     "regime_aware_enabled": _env_bool("JORGE_BOT_REGIME_AWARE", True),
-    # ── HÍBRIDO INTELIGENTE: swing Jorge en trending, scalp en ranging ──────
-    # Razón: Jorge swing requiere movimientos sostenidos 5-22%. En ranging eso
-    # NO pasa → TPs amplios no se ejecutan → pérdidas por stop. Solución:
-    # - trending/expansion: TPs Jorge amplios (5/12/22%) capturan big moves
-    # - ranging/exhaustion: TPs scalp (0.8/1.6/2.8%) ganancias pequeñas frecuentes
-    # El detector de ruptura estructural sigue activo: sobreescribe con TPs especiales
+    # ── regime_tps v7 (scalp en todos los regímenes) ─────────────────────────
+    # v7 backtest +86 USDT/104d. Para captar big moves cuando aparezcan, el
+    # detector de RUPTURA ESTRUCTURAL sobreescribe con TPs amplios (10/20/35%)
+    # — esto es Jorge swing solo en setups VALIDADOS, no a ciegas por régimen.
     "regime_tps": {
-        "expansion":  {"tp1_pct": 0.060, "tp1_close": 0.15, "tp2_pct": 0.140, "tp2_close": 0.20, "tp3_pct": 0.250, "tp3_close": 0.30, "runner": 0.35, "trail_atr": 3.5},
-        "trending":   {"tp1_pct": 0.050, "tp1_close": 0.20, "tp2_pct": 0.120, "tp2_close": 0.20, "tp3_pct": 0.220, "tp3_close": 0.30, "runner": 0.30, "trail_atr": 3.0},
-        # ranging y exhaustion: vuelta a SCALP calibration que ya validó (v6)
+        "expansion":  {"tp1_pct": 0.010, "tp1_close": 0.25, "tp2_pct": 0.020, "tp2_close": 0.30, "tp3_pct": 0.035, "tp3_close": 0.25, "runner": 0.20, "trail_atr": 2.5},
+        "trending":   {"tp1_pct": 0.008, "tp1_close": 0.30, "tp2_pct": 0.016, "tp2_close": 0.30, "tp3_pct": 0.028, "tp3_close": 0.25, "runner": 0.15, "trail_atr": 2.0},
         "ranging":    {"tp1_pct": 0.008, "tp1_close": 0.30, "tp2_pct": 0.016, "tp2_close": 0.30, "tp3_pct": 0.028, "tp3_close": 0.25, "runner": 0.15, "trail_atr": 2.0},
         "exhaustion": {"tp1_pct": 0.008, "tp1_close": 0.40, "tp2_pct": 0.014, "tp2_close": 0.35, "tp3_pct": 0.022, "tp3_close": 0.20, "runner": 0.05, "trail_atr": 1.5},
     },
