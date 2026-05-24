@@ -126,25 +126,30 @@ CONFIG = {
     "macro_high_ema_period":  21,        # EMA21W: estándar de tendencia macro
     "macro_high_min_candles": 50,        # mínimo de velas semanales para que tenga sentido
 
-    # Capital y riesgo — V7 AGRESIVO: prioriza rentabilidad sobre preservación absoluta.
-    # Cambios vs v6: risk 10→20%, leverage 3→5. Stops también más ajustados abajo.
-    # Backtest debe confirmar que drawdown no excede ~15%.
+    # Capital y riesgo — V8 ALINEADO A JORGE 100%:
+    # - 20% capital activo, dividido en 5 partes de 20% c/u del activo
+    # - Leverage 3× (no 5×: necesita buffer para DCAs hasta -20%)
+    # - TPs amplios: 5/12/22% (swing trading, no scalping)
+    # - Detector de ruptura estructural → entrada excepcional 80% capital
     "total_capital_usdt": _env_float("JORGE_BOT_CAPITAL_USDT", 5000),
-    "risk_capital_pct": _env_float("JORGE_BOT_RISK_CAPITAL_PCT", 0.20),   # 20% por idea (antes 10%)
-    "leverage": _env_int("JORGE_BOT_LEVERAGE", 5),                        # 5× (antes 3×)
-    "position_parts": 5,         # 1 entrada inicial + 4 DCA moderados
+    "risk_capital_pct": _env_float("JORGE_BOT_RISK_CAPITAL_PCT", 0.20),   # 20% capital activo
+    "leverage": _env_int("JORGE_BOT_LEVERAGE", 3),                        # 3× — buffer para DCAs amplios
+    "position_parts": 5,         # 1 entrada inicial + 4 DCA
 
     # Take profit V2: más realista para intradía/swing corto y para un objetivo diario de 10-20 USDT.
-    # ── TPs y runner: BASELINE (usado si régimen no clasifica o si regime_aware=False) ──
-    # Fase 2 sobreescribe estos valores por régimen vía regime_tps.
-    "tp1_pct": 0.008,            # +0.8% precio
-    "tp1_close_pct": 0.30,       # 30%
-    "tp2_pct": 0.016,            # +1.6%
-    "tp2_close_pct": 0.30,       # 30%
-    "tp3_pct": 0.028,            # +2.8%
-    "tp3_close_pct": 0.25,       # 25% → deja 15% como runner
-    "tp_hold_pct": 0.15,         # 15% runner
-    "runner_trail_atr_mult": 2.0,
+    # ── TPs y runner — JORGE 100% (swing trading) ────────────────────────────
+    # Cita: "La descargo cuando esté en positivo >100% del margen. Resto con TP 1000%"
+    # Con leverage 3×: 100% retorno/margen = ~33% movimiento de precio
+    # Pero Jorge usa 5×, donde 100% margen = 20% precio. Aquí 3× para más buffer DCA.
+    # TPs en % PRECIO:
+    "tp1_pct": 0.05,             # +5% precio (15% margen retorno con lev 3) → asegurar caja
+    "tp1_close_pct": 0.20,       # 20%
+    "tp2_pct": 0.12,             # +12% (36% margen) → descargar otra parte
+    "tp2_close_pct": 0.20,       # 20%
+    "tp3_pct": 0.22,             # +22% (66% margen) → realizar mayor parte
+    "tp3_close_pct": 0.30,       # 30%
+    "tp_hold_pct": 0.30,         # 30% RUNNER indefinido — "resto con TP 1000%"
+    "runner_trail_atr_mult": 3.0,  # buffer ATR amplio para runner (no cortar prematuro)
 
     # ── FASE 2: Régimen-aware execution ──────────────────────────────────────
     # El bot cambia TPs, sizing y filtros según el régimen detectado:
@@ -154,14 +159,16 @@ CONFIG = {
     # - exhaustion: vol alta sin tendencia → reducir sizing, solo trades A
     # - quiet:     vol baja sin tendencia → NO operar
     "regime_aware_enabled": _env_bool("JORGE_BOT_REGIME_AWARE", True),
-    # TPs calibrados conservadores: cerca del baseline v2 (que ya funciona) con
-    # pequeñas adaptaciones. Backtest mostró que TPs amplios (3-5%) no se
-    # ejecutaban en mercados típicos. Mejor mantenerse cerca de v2.
+    # TPs por régimen — alineados a Jorge (swing) pero modulados por contexto:
+    # - expansion (vol alta + trend): TPs MÁS amplios, deja correr al máximo
+    # - trending: TPs Jorge estándar
+    # - ranging: TPs ajustados (mean reversion, no swing) — Jorge no opera mucho rangos
+    # - exhaustion: solo trades A con TPs amplios, sizing reducido
     "regime_tps": {
-        "expansion":  {"tp1_pct": 0.010, "tp1_close": 0.25, "tp2_pct": 0.020, "tp2_close": 0.30, "tp3_pct": 0.035, "tp3_close": 0.25, "runner": 0.20, "trail_atr": 2.5},
-        "trending":   {"tp1_pct": 0.008, "tp1_close": 0.30, "tp2_pct": 0.016, "tp2_close": 0.30, "tp3_pct": 0.028, "tp3_close": 0.25, "runner": 0.15, "trail_atr": 2.0},
-        "ranging":    {"tp1_pct": 0.008, "tp1_close": 0.30, "tp2_pct": 0.016, "tp2_close": 0.30, "tp3_pct": 0.028, "tp3_close": 0.25, "runner": 0.15, "trail_atr": 2.0},
-        "exhaustion": {"tp1_pct": 0.008, "tp1_close": 0.40, "tp2_pct": 0.014, "tp2_close": 0.35, "tp3_pct": 0.022, "tp3_close": 0.20, "runner": 0.05, "trail_atr": 1.5},
+        "expansion":  {"tp1_pct": 0.060, "tp1_close": 0.15, "tp2_pct": 0.140, "tp2_close": 0.20, "tp3_pct": 0.250, "tp3_close": 0.30, "runner": 0.35, "trail_atr": 3.5},
+        "trending":   {"tp1_pct": 0.050, "tp1_close": 0.20, "tp2_pct": 0.120, "tp2_close": 0.20, "tp3_pct": 0.220, "tp3_close": 0.30, "runner": 0.30, "trail_atr": 3.0},
+        "ranging":    {"tp1_pct": 0.020, "tp1_close": 0.30, "tp2_pct": 0.040, "tp2_close": 0.30, "tp3_pct": 0.070, "tp3_close": 0.30, "runner": 0.10, "trail_atr": 2.0},
+        "exhaustion": {"tp1_pct": 0.030, "tp1_close": 0.40, "tp2_pct": 0.060, "tp2_close": 0.30, "tp3_pct": 0.100, "tp3_close": 0.25, "runner": 0.05, "trail_atr": 2.0},
     },
     "regime_sizing": {
         "expansion":  1.00,
@@ -199,9 +206,23 @@ CONFIG = {
     "vwap_confluence_boost":  1.15,      # × sizing si confluencia favorable
     "vwap_chase_penalty":     0.80,      # × sizing si trade contra VWAP lejos
 
+    # ── RUPTURA ESTRUCTURAL — operación excepcional Jorge ────────────────────
+    # Cuando se detecta ruptura confirmada: entrar con 80% del capital (4× el normal)
+    # TPs cortos: salir 90% en +30-50% de ganancia (operación rápida, no swing)
+    "structural_break_enabled":  _env_bool("JORGE_BOT_STRUCTURAL_BREAK", True),
+    "structural_break_sizing":   4.0,    # 4× el sizing normal (20% × 4 = 80% capital)
+    "structural_break_tps": {            # TPs específicos para rupturas (cierre rápido)
+        "tp1_pct": 0.10,  "tp1_close": 0.30,    # +10% precio → cerrar 30%
+        "tp2_pct": 0.20,  "tp2_close": 0.30,    # +20% → cerrar 30%
+        "tp3_pct": 0.35,  "tp3_close": 0.30,    # +35% → cerrar 30% (90% total cerrado)
+        "runner": 0.10,
+        "trail_atr": 2.0,
+    },
+
     # DCA V2: escalado moderado. Se evita el martingale agresivo.
-    "dca_levels_pct": [-0.015, -0.03, -0.045, -0.06],
-    "dca_size_multipliers": [0.50, 0.75, 1.00, 1.25],
+    # DCAs según Jorge: niveles amplios, tamaño igual (20% cada uno del capital activo)
+    "dca_levels_pct": [-0.03, -0.07, -0.12, -0.20],
+    "dca_size_multipliers": [1.00, 1.00, 1.00, 1.00],
 
     # Umbrales de análisis
     "compression_threshold_pct": 0.02,
@@ -219,20 +240,20 @@ CONFIG = {
 
     # Invalidación dura V2. Si el setup no responde, se sale.
     "enable_hard_stop": True,
-    # Con leverage 5×, -6% precio = -30% margen (cerca de liquidación). Bajamos a -3%.
-    "hard_stop_pct": -0.03,           # fallback estático (usado si dynamic_stop_enabled=False o fail)
-
+    # Alineado a Jorge: deja que DCAs lleguen hasta -20% precio. Pero -20% × lev 3 = -60% margen
+    # que es agresivo. Hard stop a -25% precio (= -75% margen, justo antes de liquidación lev 3 33%)
+    # protege contra catástrofes pero permite DCAs amplios. Dinámico debería activar antes.
+    "hard_stop_pct": -0.25,
     # ── STOP DINÁMICO ─────────────────────────────────────────────────────────
-    # Calcula el stop sobre el swing low/high reciente + buffer ATR. Respeta la
-    # estructura real del precio en vez de un % fijo ciego al contexto.
-    # Clamped entre min_pct y max_pct para evitar stops absurdos.
-    # Recalibrado para leverage 5×: max 4% precio = -20% margen (tolerable, no liquida)
+    # Con TPs amplios (Jorge), el stop también debe ser amplio para no cortar setups que
+    # llegan a tomar 22% precio. Stop max 12% precio (= 36% margen lev 3) — agresivo pero
+    # consistente con la asimetría que Jorge busca: arriesgar 12% para ganar 22%.
     "dynamic_stop_enabled":      _env_bool("JORGE_BOT_DYNAMIC_STOP", True),
-    "dynamic_stop_lookback":     10,      # velas para buscar swing low/high
-    "dynamic_stop_atr_mult":     1.0,     # cuánto buffer ATR debajo/encima del swing
-    "dynamic_stop_atr_period":   14,      # cálculo del ATR (true range medio)
-    "dynamic_stop_max_pct":      0.04,    # tope max (4% precio = -20% margen con lev 5)
-    "dynamic_stop_min_pct":      0.012,   # tope min: stop no más ajustado que 1.2%
+    "dynamic_stop_lookback":     20,      # velas para buscar swing low/high (más amplio: swing structure)
+    "dynamic_stop_atr_mult":     1.5,     # buffer ATR mayor — protege de wicks
+    "dynamic_stop_atr_period":   14,
+    "dynamic_stop_max_pct":      0.12,    # tope max: 12% (= 36% margen lev 3)
+    "dynamic_stop_min_pct":      0.03,    # tope min: 3% precio
 
     # Señales — automatización más estricta
     "min_score_to_enter": 8,
@@ -1295,6 +1316,89 @@ def check_ema_trend_str(df: pd.DataFrame) -> str:
     return "neutral"
 
 
+# ─── DETECTOR DE RUPTURA ESTRUCTURAL (escenario excepcional Jorge 80% capital) ──
+
+def detect_structural_break(df_mid: pd.DataFrame, df_macro: pd.DataFrame,
+                            df_entry: pd.DataFrame, cfg: dict) -> dict:
+    """Detecta ruptura estructural bajista→alcista según las 4 condiciones de Jorge:
+
+    1. Cierre de vela 4H/1D POR ENCIMA del máximo previo (no solo mecha)
+    2. Volumen alto en vela de ruptura (≥ 1.5× promedio 20 velas)
+    3. OB virgen o soporte cercano valida el nivel
+    4. EMA10 > EMA55 en timeframe inmediato superior (4H si rompemos en 1D)
+
+    Cita Jorge: "Entrar con 80% del capital de futuros (excepcional vs el 20% normal)"
+                "TP: cerrar 90-95% en el primer +30-50% de ganancia"
+
+    Returns dict con:
+      - detected (bool): si se cumplen todas las condiciones
+      - side: "long" (Jorge solo opera rupturas alcistas)
+      - confidence: 0..1 score basado en cuántas condiciones se cumplen
+      - reasons: lista de razones (debugging)
+    """
+    result = {"detected": False, "side": "long", "confidence": 0.0, "reasons": []}
+
+    if df_mid is None or len(df_mid) < 25:
+        result["reasons"].append("df_mid insufficient")
+        return result
+
+    last = df_mid.iloc[-1]
+    prev = df_mid.iloc[-2]
+
+    # 1. Cierre de vela 4H sobre máximo previo (rolling 20 velas)
+    high_lookback = df_mid["high"].iloc[-21:-1]   # excluye la vela actual
+    prev_max = float(high_lookback.max())
+    cond1 = float(last["close"]) > prev_max
+    if cond1:
+        result["confidence"] += 0.30
+        result["reasons"].append(f"close {last['close']:.2f} > prev_max {prev_max:.2f}")
+
+    # 2. Volumen alto en vela de ruptura
+    vol_avg_20 = float(df_mid["volume"].iloc[-21:-1].mean())
+    vol_now = float(last["volume"])
+    cond2 = vol_now >= vol_avg_20 * 1.5
+    if cond2:
+        result["confidence"] += 0.25
+        result["reasons"].append(f"vol {vol_now:.0f} >= 1.5x avg {vol_avg_20:.0f}")
+
+    # 3. OB virgen activo (en df_mid, los OB están calculados)
+    cond3 = False
+    try:
+        ob_low = last.get("ob_bull_low")
+        ob_high = last.get("ob_bull_high")
+        if ob_low is not None and ob_high is not None and not pd.isna(ob_low) and not pd.isna(ob_high):
+            # OB activo válido si el precio actual está cerca o por encima
+            close = float(last["close"])
+            cond3 = close >= float(ob_low) * 0.98   # tolerancia 2%
+            if cond3:
+                result["confidence"] += 0.20
+                result["reasons"].append(f"OB bull virgen [{ob_low:.2f}-{ob_high:.2f}] valida")
+    except Exception:
+        pass
+
+    # 4. EMA10 > EMA55 en df_macro (timeframe inmediato superior al de ruptura)
+    cond4 = False
+    if df_macro is not None and len(df_macro) > 0:
+        try:
+            macro_last = df_macro.iloc[-1]
+            ema10 = float(macro_last.get("ema10", 0))
+            ema55 = float(macro_last.get("ema55", 0))
+            if ema10 > ema55 > 0:
+                cond4 = True
+                result["confidence"] += 0.25
+                result["reasons"].append(f"EMA10 {ema10:.2f} > EMA55 {ema55:.2f} en macro")
+        except Exception:
+            pass
+
+    # Detección: requiere 3 de 4 condiciones (confidence >= 0.7)
+    # OR las 2 críticas (cierre + volumen) + 1 de las 2 secundarias (OB o EMA)
+    critical_2 = cond1 and cond2
+    secondary_any = cond3 or cond4
+    result["detected"] = (result["confidence"] >= 0.70) or (critical_2 and secondary_any)
+
+    return result
+
+
 # ─── FUNDING RATE AWARENESS ──────────────────────────────────────────────────
 
 def fetch_funding_rate_history(exchange, symbol: str, limit: int = 200) -> pd.DataFrame:
@@ -1753,6 +1857,15 @@ def evaluate_signal(df_macro: pd.DataFrame, df_mid: pd.DataFrame,
     sig["vwap_long_sizing"]   = vwap_long_mult
     sig["vwap_short_sizing"]  = vwap_short_mult
 
+    # ── Detector de RUPTURA ESTRUCTURAL (Jorge: 80% capital, TPs cortos) ────
+    structural_break = {"detected": False}
+    if cfg.get("structural_break_enabled", True):
+        try:
+            structural_break = detect_structural_break(df_mid, df_macro, df_entry, cfg)
+        except Exception as e:
+            logger.debug(f"structural_break: {e}")
+    sig["structural_break"] = structural_break
+
     return sig
 
 
@@ -1918,6 +2031,12 @@ class PaperPositionManager:
         size = self._order_size(price)
         if sig["high_conviction"] and sig["entry_type"] == "A":
             size *= 1.5
+        # RUPTURA ESTRUCTURAL: Jorge entra con 80% del capital (4× sizing normal)
+        sb = sig.get("structural_break") or {}
+        if sb.get("detected"):
+            size *= float(self.cfg.get("structural_break_sizing", 4.0))
+            logger.info(f"{self._paper_tag} 🚀 RUPTURA ESTRUCTURAL detectada — sizing × {self.cfg.get('structural_break_sizing',4.0)} "
+                        f"({', '.join(sb.get('reasons',[]))[:120]})")
         # Sizing combinado killzone × adaptativo, calculado en run_bot
         size *= sig.get("_final_sizing", 1.0)
         size = round(size, 6)
@@ -1931,6 +2050,10 @@ class PaperPositionManager:
         # Régimen al abrir → snapshot de TPs específicos para este trade
         regime = sig.get("regime", "warmup")
         regime_tps = self.cfg.get("regime_tps", {}).get(regime) if self.cfg.get("regime_aware_enabled", True) else None
+        # Si es ruptura estructural, los TPs de ruptura tienen prioridad
+        if (sig.get("structural_break") or {}).get("detected"):
+            regime_tps = self.cfg.get("structural_break_tps", regime_tps)
+            regime = "structural_break"
 
         self.active_long = {
             "entry_price": price,
@@ -1947,6 +2070,7 @@ class PaperPositionManager:
             "stop_price": stop_price,                        # None = usa hard_stop_pct legacy
             "regime_at_entry": regime,
             "regime_tps":      regime_tps,                   # None → usa TPs del CONFIG global
+            "is_structural_break": bool((sig.get("structural_break") or {}).get("detected")),
         }
         self.dca_count = 0
         msg = (f"{self._paper_tag} ✅ LONG ABIERTO | {self.symbol}\n"
