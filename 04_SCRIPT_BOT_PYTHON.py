@@ -187,6 +187,16 @@ CONFIG = {
     "funding_long_boost":     1.2,       # boost sizing LONG si funding negativo (shorts cargados)
     "funding_short_boost":    1.2,       # boost sizing SHORT si funding positivo (longs cargados)
 
+    # ── VWAP confluence (mean reversion institucional) ──────────────────────
+    # VWAP diario (ancla 00:00 UTC) marca el "precio justo" ponderado por volumen.
+    # LONG con confluencia: precio toca/cruza VWAP desde abajo → boost sizing
+    # SHORT con confluencia: precio toca/cruza VWAP desde arriba → boost sizing
+    # Trades contra VWAP (chase): penalización suave
+    "vwap_aware_enabled":     _env_bool("JORGE_BOT_VWAP_AWARE", True),
+    "vwap_proximity_pct":     0.005,     # 0.5% — distancia para considerar "cerca de VWAP"
+    "vwap_confluence_boost":  1.15,      # × sizing si confluencia favorable
+    "vwap_chase_penalty":     0.80,      # × sizing si trade contra VWAP lejos
+
     # DCA V2: escalado moderado. Se evita el martingale agresivo.
     "dca_levels_pct": [-0.015, -0.03, -0.045, -0.06],
     "dca_size_multipliers": [0.50, 0.75, 1.00, 1.25],
@@ -291,16 +301,16 @@ CONFIG = {
     "trailing_stop_after_tp1": True,
     "trailing_stop_entry_pct": -0.0025,   # proteger rápidamente cuando el trade ya pagó
 
-    # Multi-symbol: BTC + ETH + SOL + AVAX (top 4 majors líquidas en perpetuos)
-    # Cada symbol se evalúa independientemente: régimen, funding, OB, scores.
-    # max_concurrent=2 permite diversificar SIN concentrar todo en cripto correlada
-    "symbols": _env_list("JORGE_BOT_SYMBOLS", [
-        "BTC/USDT:USDT",
-        "ETH/USDT:USDT",
-        "SOL/USDT:USDT",
-        "AVAX/USDT:USDT",
-    ]),
-    "max_concurrent_positions": _env_int("JORGE_BOT_MAX_POSITIONS", 2),
+    # Multi-symbol infraestructura disponible pero CALIBRACIÓN es para BTC.
+    # Backtest comparativo (2026-02 a 05) en mismo periodo:
+    #   BTC:  +26.35 USDT ✓
+    #   SOL:   +5.66 USDT (marginal)
+    #   ETH:  -17.86 USDT (perdedor)
+    #   AVAX: -47.49 USDT (pierde fuerte)
+    # → Default a BTC solo. Para añadir alts hay que calibrar TPs/stops por
+    #   volatilidad propia (TODO: regime_tps_by_symbol o ATR-relative).
+    "symbols": _env_list("JORGE_BOT_SYMBOLS", ["BTC/USDT:USDT"]),
+    "max_concurrent_positions": _env_int("JORGE_BOT_MAX_POSITIONS", 1),
 
     # Tolerancia de soporte estructural para DCA
     "dca_structural_tolerance": 0.015,   # ±1.5% de distancia al soporte
@@ -722,6 +732,28 @@ def get_ohlcv_history(exchange: ccxt.Exchange, symbol: str, timeframe: str,
     return df
 
 
+def _compute_daily_vwap(df: pd.DataFrame) -> pd.Series:
+    """Calcula VWAP anclado al inicio del día UTC.
+
+    VWAP = Σ(precio_típico × volumen) / Σ(volumen) acumulado desde 00:00 UTC.
+    El precio típico es (H+L+C)/3 — estándar institucional.
+
+    Retorna pd.Series alineada con el index del df (NaN si no hay volumen).
+    """
+    if df is None or len(df) == 0:
+        return pd.Series(dtype=float)
+    if not isinstance(df.index, pd.DatetimeIndex):
+        return pd.Series(np.nan, index=df.index)
+
+    typical = (df["high"] + df["low"] + df["close"]) / 3.0
+    pv = typical * df["volume"]
+
+    # Agrupar por fecha UTC. Reset cada vez que cambia el día.
+    grouper = df.index.normalize()  # trunca a 00:00 UTC
+    vwap = pv.groupby(grouper).cumsum() / df["volume"].groupby(grouper).cumsum()
+    return vwap
+
+
 def _add_all_indicators(df: pd.DataFrame) -> pd.DataFrame:
     c = df["close"]
     h = df["high"]
@@ -843,6 +875,14 @@ def _detect_smc(df: pd.DataFrame, sweep_lookback: int = 20,
                 regime.append("ranging")      # vol normal/baja, sin tendencia
         df["regime"]  = regime
         df["atr_pct"] = atr_pct
+
+    # VWAP diario (ancla a inicio UTC) — confluence con HTF para mean reversion
+    try:
+        df["vwap_daily"]      = _compute_daily_vwap(df)
+        df["vwap_dist_pct"]   = (df["close"] - df["vwap_daily"]) / df["vwap_daily"]
+    except Exception:
+        df["vwap_daily"]      = np.nan
+        df["vwap_dist_pct"]   = np.nan
 
     return df
 
@@ -1680,6 +1720,34 @@ def evaluate_signal(df_macro: pd.DataFrame, df_mid: pd.DataFrame,
     sig["funding_state"]        = funding_state
     sig["funding_long_sizing"]  = funding_long_mult
     sig["funding_short_sizing"] = funding_short_mult
+
+    # ── VWAP confluence ─────────────────────────────────────────────────────
+    # LONG con confluencia: precio igual/abajo del VWAP → mean reversion alcista
+    # SHORT con confluencia: precio igual/arriba del VWAP → mean reversion bajista
+    # Chase (precio muy lejos del VWAP en la dirección que vamos a comprar) → penalty
+    vwap_long_mult, vwap_short_mult = 1.0, 1.0
+    vwap_dist = None
+    if cfg.get("vwap_aware_enabled", True):
+        try:
+            vwap_dist_raw = df_entry.iloc[-1].get("vwap_dist_pct") if hasattr(df_entry.iloc[-1], "get") else None
+            if vwap_dist_raw is not None and not pd.isna(vwap_dist_raw):
+                vwap_dist = float(vwap_dist_raw)
+                prox = float(cfg.get("vwap_proximity_pct", 0.005))
+                boost = float(cfg.get("vwap_confluence_boost", 1.15))
+                penalty = float(cfg.get("vwap_chase_penalty", 0.80))
+
+                if vwap_dist <= -prox:        # Precio bajo VWAP → confluencia LONG, chase SHORT
+                    vwap_long_mult  = boost
+                    vwap_short_mult = penalty
+                elif vwap_dist >= prox:       # Precio sobre VWAP → confluencia SHORT, chase LONG
+                    vwap_long_mult  = penalty
+                    vwap_short_mult = boost
+                # En zona neutral (|dist| < prox): ambos × 1.0
+        except Exception as e:
+            logger.debug(f"vwap eval: {e}")
+    sig["vwap_dist_pct"]      = vwap_dist
+    sig["vwap_long_sizing"]   = vwap_long_mult
+    sig["vwap_short_sizing"]  = vwap_short_mult
 
     return sig
 
@@ -3573,7 +3641,8 @@ def run_bot(cfg: dict = CONFIG):
                                     logger.debug(f"adaptive sizing error: {e}")
                             final_mult = (kz_sizing * adapt_mult * regime_size_mult
                                           * sig.get("macro_long_sizing", 1.0)
-                                          * sig.get("funding_long_sizing", 1.0))
+                                          * sig.get("funding_long_sizing", 1.0)
+                                          * sig.get("vwap_long_sizing", 1.0))
                             sig["_adapt_mult"]   = adapt_mult
                             sig["_final_sizing"] = final_mult
                             lunes = " 🌟 Lunes" if now.weekday() == 0 else ""
@@ -3627,7 +3696,8 @@ def run_bot(cfg: dict = CONFIG):
                                     logger.debug(f"adaptive sizing error: {e}")
                             final_mult = (kz_sizing * adapt_mult * regime_size_mult
                                           * sig.get("macro_short_sizing", 1.0)
-                                          * sig.get("funding_short_sizing", 1.0))
+                                          * sig.get("funding_short_sizing", 1.0)
+                                          * sig.get("vwap_short_sizing", 1.0))
                             logger.info(f"🔻 {sym} SHORT | Score: {sig.get('score_short_adjusted')}/13 | "
                                         f"Tipo {st_type} | KZ: {kz_name} ×{kz_sizing:.2f} | "
                                         f"adapt ×{adapt_mult:.2f} → final ×{final_mult:.2f}")
@@ -4100,7 +4170,7 @@ def run_seed_buckets(cfg: dict = CONFIG):
         if regime_block:
             continue   # quiet régime → no operar
 
-        # LONG (régimen + macro bias 1W + killzone + funding)
+        # LONG (régimen + macro 1W + killzone + funding + VWAP)
         if (sig["can_long"]
                 and sig["entry_type"] in cfg.get("allowed_entry_types", ["A", "B", "C"])
                 and not (regime_high_conv_only and sig.get("entry_type") != "A")):
@@ -4110,6 +4180,7 @@ def run_seed_buckets(cfg: dict = CONFIG):
                 * sig.get("macro_long_sizing", 1.0)
                 * regime_size_mult
                 * sig.get("funding_long_sizing", 1.0)
+                * sig.get("vwap_long_sizing", 1.0)
             )
             try:
                 if manager.open_long(price, sig):
@@ -4124,6 +4195,7 @@ def run_seed_buckets(cfg: dict = CONFIG):
                 * sig.get("macro_short_sizing", 1.0)
                 * regime_size_mult
                 * sig.get("funding_short_sizing", 1.0)
+                * sig.get("vwap_short_sizing", 1.0)
             )
             try:
                 if manager.open_short_standalone(price, sig, sizing_mult=short_size):
